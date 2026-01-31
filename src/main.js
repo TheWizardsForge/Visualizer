@@ -35,6 +35,7 @@ class Visualizer {
     this.nextModeIndex = null;
     this.audioEnabled = false;
     this.audioSensitivity = 2.5;
+    this.audioSource = 'microphone'; // 'microphone' or 'system'
     this.uiVisible = true;
 
     // Transition state
@@ -102,18 +103,42 @@ class Visualizer {
       .name('Mode')
       .onChange((v) => this.switchMode(v));
 
-    mainFolder.add(this, 'audioEnabled').name('Audio Reactive').onChange((v) => {
-      if (v) this.audio.start();
-      else this.audio.stop();
+    // Audio controls
+    const audioFolder = mainFolder.addFolder('Audio');
+    audioFolder.add(this, 'audioEnabled').name('Audio Reactive').onChange((v) => {
+      this.toggleAudio(v);
     });
 
-    mainFolder.add(this, 'audioSensitivity', 0.5, 10.0).name('Audio Sensitivity').onChange((v) => {
+    // Audio source selector
+    const audioSources = { 'Microphone': 'microphone', 'System Audio': 'system' };
+    audioFolder.add(this, 'audioSource', audioSources).name('Audio Source').onChange((v) => {
+      // If audio is currently enabled, restart with new source
+      if (this.audioEnabled) {
+        this.audio.stop();
+        this.audio.start(v);
+      }
+    });
+
+    audioFolder.add(this, 'audioSensitivity', 0.5, 10.0).name('Sensitivity').onChange((v) => {
       this.audio.setSensitivity(v);
     });
 
     // Add mode-specific controls
     this.modeFolder = this.gui.addFolder('Mode Settings');
     this.updateModeGUI();
+  }
+
+  async toggleAudio(enabled) {
+    if (enabled) {
+      const success = await this.audio.start(this.audioSource);
+      if (!success) {
+        // Failed to start audio, reset the toggle
+        this.audioEnabled = false;
+        this.gui.controllersRecursive().find(c => c.property === 'audioEnabled')?.updateDisplay();
+      }
+    } else {
+      this.audio.stop();
+    }
   }
 
   updateModeGUI() {
@@ -166,8 +191,7 @@ class Visualizer {
       case ' ':
         e.preventDefault();
         this.audioEnabled = !this.audioEnabled;
-        if (this.audioEnabled) this.audio.start();
-        else this.audio.stop();
+        this.toggleAudio(this.audioEnabled);
         this.gui.controllersRecursive().find(c => c.property === 'audioEnabled')?.updateDisplay();
         break;
       case 'h':

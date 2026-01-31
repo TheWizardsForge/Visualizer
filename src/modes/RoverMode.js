@@ -184,6 +184,24 @@ class SimplexNoise {
     }
     return value / maxValue;
   }
+
+  // Ridged noise - creates sharp ridges/peaks
+  ridgedNoise2D(x, y) {
+    return 1.0 - Math.abs(this.noise2D(x, y));
+  }
+
+  // Multi-octave ridged noise for dramatic terrain features
+  ridgedFbm(x, y, octaves = 4) {
+    let value = 0, amplitude = 1, frequency = 1, maxValue = 0;
+    for (let i = 0; i < octaves; i++) {
+      const n = 1.0 - Math.abs(this.noise2D(x * frequency, y * frequency));
+      value += amplitude * n * n; // Square for sharper peaks
+      maxValue += amplitude;
+      amplitude *= 0.5;
+      frequency *= 2;
+    }
+    return value / maxValue;
+  }
 }
 
 export class RoverMode extends BaseMode {
@@ -193,8 +211,8 @@ export class RoverMode extends BaseMode {
     this.params = {
       speed: 1.0,
       fov: 90,
-      terrainScale: 0.00015,
-      terrainHeight: 15,
+      terrainScale: 0.0005,
+      terrainHeight: 35,
       cameraHeight: 4.0,
       starDensity: 5000,
       nebulaIntensity: 0.5,
@@ -209,10 +227,13 @@ export class RoverMode extends BaseMode {
       faunaEnabled: true,
       weatherEnabled: true,
       eventsEnabled: true,
-      cameraMode: 'normal' // 'normal', 'cinematic', 'orbit', 'low'
+      cameraMode: 'normal' // 'normal', 'cinematic', 'orbit', 'low', 'scenic', 'lakeTour'
     };
 
-    this.noise = new SimplexNoise(42);
+    // Initialize seed from system time for randomness
+    this.currentSeed = Date.now() % 1000000;
+    this.seedInput = this.currentSeed.toString();
+    this.noise = new SimplexNoise(this.currentSeed);
     this.roverPosition = new THREE.Vector3(0, 0, 0);
     this.time = 0;
     this.cameraY = 0;
@@ -231,6 +252,28 @@ export class RoverMode extends BaseMode {
     this.glitchTimer = 0;
     this.glitchActive = false;
     this.glitchIntensity = 0;
+
+    // Gas giant orbital motion
+    this.gasPlanetOrbit = { angle: 0, speed: 0.003, radius: 500, centerY: 200 };
+
+    // Energy pulse state
+    this.energyPulseActive = false;
+    this.energyPulseTime = 0;
+
+    // Scenic camera state
+    this.scenicTime = 0;
+    this.scenicLookTarget = new THREE.Vector3(0, 0, -40);
+
+    // Lake tour camera state
+    this.lakeTourTime = 0;
+    this.lakeTourPhase = 0; // 0=approach, 1=over water, 2=dive under, 3=emerge, 4=circle
+    this.lakeTourLakeIndex = 0;
+    this.lakeTourCamPos = new THREE.Vector3();
+    this.lakeTourLookTarget = new THREE.Vector3();
+
+    // Collision avoidance state
+    this.collisionAvoidanceHeight = 0;
+    this.collisionAvoidanceEnabled = true;
 
     this.setupScene();
   }
@@ -262,6 +305,12 @@ export class RoverMode extends BaseMode {
     this.createAurora();
     this.createAlienLakes();
     this.createCloudLayers();
+
+    // Enhanced visual features
+    this.createPulsars();
+    this.createLightPillars();
+    this.createSolarFlares();
+    this.createGlowingFissures();
 
     // Post-processing bloom
     this.setupBloom();
@@ -419,40 +468,108 @@ export class RoverMode extends BaseMode {
           varying vec2 vUv;
           varying vec3 vWorldPos;
 
+          // Simple noise for water surface variation
+          float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+          }
+
+          float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+            return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+          }
+
           void main() {
             vec2 center = vUv - 0.5;
             float dist = length(center);
 
-            // Ripple effect
-            float ripple = sin(dist * 20.0 - uTime * 2.0) * 0.5 + 0.5;
-            ripple *= sin(dist * 30.0 - uTime * 3.0 + 1.0) * 0.5 + 0.5;
-            ripple = pow(ripple, 2.0);
+            // Slow, gentle ripple effect
+            float slowTime = uTime * 0.3;
+            float ripple1 = sin(dist * 6.0 - slowTime * 0.6) * 0.5 + 0.5;
+            float ripple2 = sin(dist * 10.0 - slowTime * 0.4 + 2.0) * 0.5 + 0.5;
+            float ripple = ripple1 * ripple2;
+
+            // Wave distortion for reflection wobble
+            float waveX = sin(vWorldPos.x * 0.15 + slowTime * 0.8) * 0.03;
+            float waveZ = cos(vWorldPos.z * 0.12 + slowTime * 0.6) * 0.03;
+
+            // Fresnel - much more reflective overall
+            float fresnel = pow(dist * 1.5, 1.2);
+            fresnel = clamp(fresnel, 0.4, 0.95);
 
             // Audio reactive waves
-            float audioWave = sin(dist * 15.0 - uTime * 5.0) * uAudioBass * 0.3;
+            float audioWave = sin(dist * 8.0 - uTime * 1.2) * uAudioBass * 0.15;
 
-            // Fake reflection - blend sky color with lake color
-            float fresnel = pow(1.0 - dist * 1.5, 2.0);
-            fresnel = clamp(fresnel, 0.0, 1.0);
+            // === REFLECTION ===
+            // Create a bright fake sky gradient that doesn't depend on scene background
+            vec3 fakeHorizon = vec3(0.15, 0.25, 0.45); // Blue-ish horizon
+            vec3 fakeZenith = vec3(0.05, 0.08, 0.15);  // Darker zenith
+            float skyGradient = 0.5 + center.y * 0.8; // Fake "up" direction
+            vec3 fakeSkyColor = mix(fakeHorizon, fakeZenith, clamp(skyGradient, 0.0, 1.0));
 
-            vec3 reflectedColor = mix(uSkyColor, vec3(0.2, 0.4, 0.6), 0.3);
-            vec3 color = mix(uLakeColor, reflectedColor, fresnel);
+            // Blend in actual sky color if it's bright enough
+            float skyBrightness = dot(uSkyColor, vec3(0.3, 0.5, 0.2));
+            vec3 skyBase = mix(fakeSkyColor, uSkyColor * 1.5, clamp(skyBrightness * 2.0, 0.0, 0.5));
+            skyBase += vec3(0.1, 0.15, 0.25); // Boost overall
 
-            // Add shimmer
-            color += vec3(0.1, 0.2, 0.3) * ripple * 0.3;
+            // Fake reflected stars/lights - bright spots on water
+            vec2 reflectUV = vWorldPos.xz * 0.015 + vec2(waveX, waveZ) * 3.0;
+            float stars = 0.0;
+            for (float i = 0.0; i < 4.0; i++) {
+              vec2 starUV = reflectUV * (0.8 + i * 0.4) + vec2(i * 17.3, i * 31.7);
+              float starNoise = noise(starUV + slowTime * 0.08);
+              float star = smoothstep(0.7, 0.85, starNoise);
+              stars += star * (1.0 - i * 0.2);
+            }
+
+            // Reflected nebula/aurora - colorful patches
+            float nebulaReflect = noise(reflectUV * 1.5 - slowTime * 0.03);
+            vec3 nebulaColor = vec3(0.5, 0.2, 0.6) * nebulaReflect;
+            nebulaColor += vec3(0.2, 0.6, 0.5) * noise(reflectUV * 1.2 + 100.0);
+            nebulaColor += vec3(0.6, 0.3, 0.2) * noise(reflectUV * 0.8 + 200.0) * 0.5;
+
+            // Combine reflection elements
+            vec3 reflection = skyBase * 1.2;
+            reflection += nebulaColor * 0.5;
+            reflection += vec3(1.0, 0.98, 0.9) * stars * 1.2; // Bright star reflections
+
+            // Add ripple distortion to reflection brightness
+            reflection *= 0.9 + ripple * 0.25;
+
+            // === WATER COLOR ===
+            vec3 deepColor = uLakeColor * 0.5;
+            vec3 shallowColor = uLakeColor + vec3(0.08, 0.18, 0.12);
+            vec3 waterColor = mix(shallowColor, deepColor, dist * 1.2);
+
+            // === FINAL BLEND ===
+            // Heavy reflection bias - water should look very reflective
+            vec3 color = mix(waterColor * 0.7, reflection, fresnel);
+
+            // Always add significant reflection for glassy mirror look
+            color += reflection * 0.25;
+
+            // Shimmer highlights
+            float shimmer = pow(ripple, 2.0);
+            color += vec3(0.4, 0.5, 0.6) * shimmer * 0.25 * fresnel;
             color += vec3(0.1, 0.15, 0.2) * audioWave;
 
-            // Glowing edge
-            float edge = smoothstep(0.5, 0.4, dist);
-            float glow = smoothstep(0.5, 0.35, dist) - smoothstep(0.4, 0.25, dist);
-            color += vec3(0.2, 0.5, 0.6) * glow * 0.5;
+            // Soft glowing edge
+            float edge = smoothstep(0.5, 0.3, dist);
+            float glow = smoothstep(0.5, 0.4, dist) - smoothstep(0.45, 0.35, dist);
+            color += vec3(0.2, 0.5, 0.6) * glow * 0.3;
 
-            // Bioluminescent spots
-            float spots = sin(vWorldPos.x * 0.5 + uTime) * sin(vWorldPos.z * 0.5 - uTime * 0.7);
-            spots = max(0.0, spots) * (1.0 - dist * 2.0);
-            color += vec3(0.3, 0.8, 0.6) * spots * 0.4;
+            // Specular sun/moon reflection hotspot
+            vec2 sunReflectPos = vec2(0.15, -0.1); // Offset from center
+            float sunDist = length(center - sunReflectPos + vec2(waveX, waveZ) * 2.0);
+            float sunReflect = smoothstep(0.15, 0.0, sunDist) * (0.7 + ripple * 0.3);
+            color += vec3(1.0, 0.95, 0.8) * sunReflect * 0.6;
 
-            float alpha = edge * 0.85;
+            float alpha = edge * 0.92;
 
             gl_FragColor = vec4(color, alpha);
           }
@@ -479,6 +596,9 @@ export class RoverMode extends BaseMode {
 
       this.scene.add(lake);
       this.lakes.push(lake);
+
+      // Store lake index for child objects
+      lake.userData.lakeIndex = this.lakes.length - 1;
 
       // Add coral around the lake
       this.createCoralForLake(lake, size);
@@ -685,6 +805,7 @@ export class RoverMode extends BaseMode {
       coralGroup.userData = {
         lakeX: lake.userData.worldX,
         lakeZ: lake.userData.worldZ,
+        lakeIndex: lake.userData.lakeIndex,
         offsetX: Math.cos(angle) * dist,
         offsetZ: Math.sin(angle) * dist,
         phase: Math.random() * Math.PI * 2
@@ -742,6 +863,7 @@ export class RoverMode extends BaseMode {
       fish.userData = {
         lakeX: lake.userData.worldX,
         lakeZ: lake.userData.worldZ,
+        lakeIndex: lake.userData.lakeIndex,
         swimAngle: angle,
         swimRadius: dist,
         swimSpeed: 0.3 + Math.random() * 0.5,
@@ -776,11 +898,27 @@ export class RoverMode extends BaseMode {
       const wrappedZ = ((worldZ % 300) + 450) % 300 - 150;
       lake.position.z = wrappedZ;
 
+      // Sample terrain at multiple points to find the lowest point for water level
+      const actualWorldZ = wrappedZ + this.roverPosition.z;
+      const lakeSize = lake.userData.size || 30;
+      const sampleRadius = lakeSize * 0.5;
+
+      // Sample terrain heights at center and 4 cardinal points
+      let minTerrainY = this.getTerrainHeight(lake.userData.worldX, actualWorldZ);
+      for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 2) {
+        const sampleX = lake.userData.worldX + Math.cos(angle) * sampleRadius;
+        const sampleZ = actualWorldZ + Math.sin(angle) * sampleRadius;
+        const sampleY = this.getTerrainHeight(sampleX, sampleZ);
+        minTerrainY = Math.min(minTerrainY, sampleY);
+      }
+
+      // Position water at the lowest terrain point, sitting in the depression
+      lake.position.y = minTerrainY + this.terrain.position.y - 1.5;
+
       // Check if we're in this lake
       const dx = lake.position.x;
       const dz = lake.position.z;
       const distToLake = Math.sqrt(dx * dx + dz * dz);
-      const lakeSize = lake.userData.size || 30;
 
       if (distToLake < lakeSize * 0.8) {
         this.isUnderwater = true;
@@ -806,8 +944,12 @@ export class RoverMode extends BaseMode {
       fish.position.x = data.lakeX + Math.cos(data.swimAngle) * data.swimRadius;
       fish.position.z = wrappedZ + Math.sin(data.swimAngle) * data.swimRadius;
 
-      // Bobbing
-      fish.position.y = data.baseY + Math.sin(elapsed * data.bobSpeed + data.swimPhase) * 0.3;
+      // Use parent lake's Y position for consistent water level
+      const parentLake = this.lakes[data.lakeIndex];
+      const waterY = parentLake ? parentLake.position.y : -2;
+
+      // Bobbing relative to water level
+      fish.position.y = waterY - 0.5 + Math.sin(elapsed * data.bobSpeed + data.swimPhase) * 0.3;
 
       // Face swimming direction
       fish.rotation.y = -data.swimAngle + Math.PI / 2;
@@ -822,6 +964,11 @@ export class RoverMode extends BaseMode {
       const wrappedZ = ((worldZ % 300) + 450) % 300 - 150;
       coral.position.z = wrappedZ + coral.userData.offsetZ;
       coral.position.x = coral.userData.lakeX + coral.userData.offsetX;
+
+      // Use parent lake's Y position for consistent water level
+      const parentLake = this.lakes[coral.userData.lakeIndex];
+      const waterY = parentLake ? parentLake.position.y : -2;
+      coral.position.y = waterY - 1.0; // Sit on lake bottom
 
       // Gentle sway
       coral.rotation.x = Math.sin(elapsed * 0.5 + coral.position.x) * 0.08;
@@ -1077,7 +1224,10 @@ export class RoverMode extends BaseMode {
         uTime: { value: 0 },
         uAudioBass: { value: 0 },
         uWeatherTint: { value: new THREE.Color(1, 1, 1) },
-        uRoverZ: { value: 0 }
+        uRoverZ: { value: 0 },
+        uEnergyPulseTime: { value: 0 },
+        uEnergyPulseOrigin: { value: new THREE.Vector2(0, 0) },
+        uEnergyPulseActive: { value: 0 }
       },
       vertexShader: `
         varying vec3 vPosition;
@@ -1099,6 +1249,9 @@ export class RoverMode extends BaseMode {
         uniform float uAudioBass;
         uniform vec3 uWeatherTint;
         uniform float uRoverZ;
+        uniform float uEnergyPulseTime;
+        uniform vec2 uEnergyPulseOrigin;
+        uniform float uEnergyPulseActive;
         varying vec3 vPosition;
         varying vec3 vWorldPos;
         varying float vElevation;
@@ -1122,140 +1275,211 @@ export class RoverMode extends BaseMode {
 
         void main() {
           // Biome calculation - based primarily on Z position for consistent transitions
-          // At speed 1.0, rover moves 10 units/sec
-          // Use Z position directly with some X noise for edge variation
-          float zBiome = vWorldPos.z * 0.00015; // Cycle every ~6666 units (~11 min full cycle, ~1 min per biome)
-          float xVariation = noise(vec2(vWorldPos.x * 0.003, vWorldPos.z * 0.002)) * 0.1;
-          float localNoise = noise(vec2(vWorldPos.x * 0.01, vWorldPos.z * 0.01)) * 0.05; // Fine detail
+          // Now 15 biomes with slower cycling for larger biome areas
+          float zBiome = vWorldPos.z * 0.0001; // Slower cycling for larger biomes
+          float xVariation = noise(vec2(vWorldPos.x * 0.002, vWorldPos.z * 0.0015)) * 0.08;
+          float localNoise = noise(vec2(vWorldPos.x * 0.005, vWorldPos.z * 0.005)) * 0.03;
           float biome = fract(zBiome + xVariation + localNoise); // 0-1 range, wrapping
 
-          // 10 diverse biomes with distinct color palettes
+          // 15 diverse biomes with distinct color palettes (mix of alien and natural)
           // Arrays: [low, mid, high] colors for each biome
 
           // Biome 0: Purple alien desert
-          vec3 low0 = vec3(0.12, 0.08, 0.18);
-          vec3 mid0 = vec3(0.22, 0.12, 0.28);
-          vec3 high0 = vec3(0.32, 0.22, 0.38);
+          vec3 low0 = vec3(0.20, 0.14, 0.30);
+          vec3 mid0 = vec3(0.35, 0.20, 0.45);
+          vec3 high0 = vec3(0.50, 0.35, 0.60);
 
           // Biome 1: Crystal blue tundra
-          vec3 low1 = vec3(0.08, 0.14, 0.22);
-          vec3 mid1 = vec3(0.12, 0.22, 0.35);
-          vec3 high1 = vec3(0.2, 0.32, 0.45);
+          vec3 low1 = vec3(0.15, 0.25, 0.38);
+          vec3 mid1 = vec3(0.22, 0.38, 0.55);
+          vec3 high1 = vec3(0.35, 0.52, 0.70);
 
           // Biome 2: Volcanic hellscape
-          vec3 low2 = vec3(0.18, 0.06, 0.04);
-          vec3 mid2 = vec3(0.35, 0.12, 0.06);
-          vec3 high2 = vec3(0.5, 0.2, 0.1);
+          vec3 low2 = vec3(0.32, 0.10, 0.06);
+          vec3 mid2 = vec3(0.55, 0.20, 0.10);
+          vec3 high2 = vec3(0.80, 0.35, 0.15);
 
-          // Biome 3: Bioluminescent swamp (pink/magenta)
-          vec3 low3 = vec3(0.15, 0.08, 0.12);
-          vec3 mid3 = vec3(0.3, 0.12, 0.25);
-          vec3 high3 = vec3(0.4, 0.2, 0.35);
+          // Biome 3: Dense Jungle (natural - deep greens)
+          vec3 low3 = vec3(0.08, 0.15, 0.05);
+          vec3 mid3 = vec3(0.12, 0.28, 0.08);
+          vec3 high3 = vec3(0.18, 0.38, 0.12);
 
-          // Biome 4: Golden dunes
-          vec3 low4 = vec3(0.18, 0.14, 0.08);
-          vec3 mid4 = vec3(0.32, 0.25, 0.12);
-          vec3 high4 = vec3(0.45, 0.35, 0.18);
+          // Biome 4: Golden Savanna
+          vec3 low4 = vec3(0.30, 0.24, 0.14);
+          vec3 mid4 = vec3(0.52, 0.42, 0.20);
+          vec3 high4 = vec3(0.72, 0.58, 0.30);
 
-          // Biome 5: Frost plains (cold blue-white)
-          vec3 low5 = vec3(0.18, 0.2, 0.25);
-          vec3 mid5 = vec3(0.28, 0.32, 0.38);
-          vec3 high5 = vec3(0.38, 0.42, 0.48);
+          // Biome 5: Frozen Tundra (natural - snow white)
+          vec3 low5 = vec3(0.70, 0.75, 0.80);
+          vec3 mid5 = vec3(0.80, 0.85, 0.90);
+          vec3 high5 = vec3(0.90, 0.92, 0.95);
 
-          // Biome 6: Toxic marshland (sickly green)
-          vec3 low6 = vec3(0.06, 0.12, 0.06);
-          vec3 mid6 = vec3(0.1, 0.25, 0.08);
-          vec3 high6 = vec3(0.15, 0.35, 0.12);
+          // Biome 6: Toxic Swamp (alien green)
+          vec3 low6 = vec3(0.10, 0.22, 0.10);
+          vec3 mid6 = vec3(0.18, 0.42, 0.15);
+          vec3 high6 = vec3(0.28, 0.58, 0.22);
 
-          // Biome 7: Obsidian wastes (dark grey/black)
-          vec3 low7 = vec3(0.06, 0.06, 0.08);
-          vec3 mid7 = vec3(0.1, 0.1, 0.12);
-          vec3 high7 = vec3(0.16, 0.15, 0.18);
+          // Biome 7: Ocean Depths (natural - deep blue)
+          vec3 low7 = vec3(0.02, 0.08, 0.15);
+          vec3 mid7 = vec3(0.05, 0.15, 0.25);
+          vec3 high7 = vec3(0.08, 0.22, 0.35);
 
-          // Biome 8: Coral reef terrain (teal/cyan)
-          vec3 low8 = vec3(0.06, 0.15, 0.18);
-          vec3 mid8 = vec3(0.1, 0.28, 0.32);
-          vec3 high8 = vec3(0.18, 0.4, 0.42);
+          // Biome 8: Coral Reef (alien teal/cyan)
+          vec3 low8 = vec3(0.12, 0.28, 0.32);
+          vec3 mid8 = vec3(0.18, 0.45, 0.52);
+          vec3 high8 = vec3(0.30, 0.62, 0.68);
 
-          // Biome 9: Rust wastes (copper/orange-brown)
-          vec3 low9 = vec3(0.15, 0.1, 0.06);
-          vec3 mid9 = vec3(0.28, 0.18, 0.1);
-          vec3 high9 = vec3(0.4, 0.25, 0.15);
+          // Biome 9: Rust Wastes (alien copper/orange)
+          vec3 low9 = vec3(0.28, 0.18, 0.10);
+          vec3 mid9 = vec3(0.48, 0.32, 0.18);
+          vec3 high9 = vec3(0.65, 0.42, 0.25);
 
-          // Select biome with smooth blending (10 biomes, each 0.1 range)
+          // Biome 10: Alpine Mountains (natural - rock and snow)
+          vec3 low10 = vec3(0.25, 0.22, 0.18);
+          vec3 mid10 = vec3(0.40, 0.38, 0.35);
+          vec3 high10 = vec3(0.85, 0.88, 0.92);
+
+          // Biome 11: Bamboo Forest (natural - pale greens)
+          vec3 low11 = vec3(0.15, 0.12, 0.08);
+          vec3 mid11 = vec3(0.35, 0.45, 0.25);
+          vec3 high11 = vec3(0.50, 0.60, 0.35);
+
+          // Biome 12: Bioluminescent Caves (alien - dark with glow)
+          vec3 low12 = vec3(0.08, 0.06, 0.12);
+          vec3 mid12 = vec3(0.15, 0.10, 0.25);
+          vec3 high12 = vec3(0.25, 0.18, 0.40);
+
+          // Biome 13: Desert Canyons (natural - sandstone)
+          vec3 low13 = vec3(0.60, 0.35, 0.20);
+          vec3 mid13 = vec3(0.75, 0.50, 0.30);
+          vec3 high13 = vec3(0.85, 0.65, 0.45);
+
+          // Biome 14: Mushroom Forest (alien - organic purples/pinks)
+          vec3 low14 = vec3(0.22, 0.12, 0.18);
+          vec3 mid14 = vec3(0.45, 0.22, 0.38);
+          vec3 high14 = vec3(0.60, 0.35, 0.52);
+
+          // Select biome with smooth blending (15 biomes, each ~0.0667 range)
           vec3 lowColor, midColor, highColor;
-          float biomeWidth = 0.1;
+          float biomeWidth = 1.0 / 15.0; // ~0.0667
 
-          if (biome < 0.1) {
+          if (biome < biomeWidth) {
             float t = biome / biomeWidth;
             lowColor = mix(low0, low1, t);
             midColor = mix(mid0, mid1, t);
             highColor = mix(high0, high1, t);
-          } else if (biome < 0.2) {
-            float t = (biome - 0.1) / biomeWidth;
+          } else if (biome < biomeWidth * 2.0) {
+            float t = (biome - biomeWidth) / biomeWidth;
             lowColor = mix(low1, low2, t);
             midColor = mix(mid1, mid2, t);
             highColor = mix(high1, high2, t);
-          } else if (biome < 0.3) {
-            float t = (biome - 0.2) / biomeWidth;
+          } else if (biome < biomeWidth * 3.0) {
+            float t = (biome - biomeWidth * 2.0) / biomeWidth;
             lowColor = mix(low2, low3, t);
             midColor = mix(mid2, mid3, t);
             highColor = mix(high2, high3, t);
-          } else if (biome < 0.4) {
-            float t = (biome - 0.3) / biomeWidth;
+          } else if (biome < biomeWidth * 4.0) {
+            float t = (biome - biomeWidth * 3.0) / biomeWidth;
             lowColor = mix(low3, low4, t);
             midColor = mix(mid3, mid4, t);
             highColor = mix(high3, high4, t);
-          } else if (biome < 0.5) {
-            float t = (biome - 0.4) / biomeWidth;
+          } else if (biome < biomeWidth * 5.0) {
+            float t = (biome - biomeWidth * 4.0) / biomeWidth;
             lowColor = mix(low4, low5, t);
             midColor = mix(mid4, mid5, t);
             highColor = mix(high4, high5, t);
-          } else if (biome < 0.6) {
-            float t = (biome - 0.5) / biomeWidth;
+          } else if (biome < biomeWidth * 6.0) {
+            float t = (biome - biomeWidth * 5.0) / biomeWidth;
             lowColor = mix(low5, low6, t);
             midColor = mix(mid5, mid6, t);
             highColor = mix(high5, high6, t);
-          } else if (biome < 0.7) {
-            float t = (biome - 0.6) / biomeWidth;
+          } else if (biome < biomeWidth * 7.0) {
+            float t = (biome - biomeWidth * 6.0) / biomeWidth;
             lowColor = mix(low6, low7, t);
             midColor = mix(mid6, mid7, t);
             highColor = mix(high6, high7, t);
-          } else if (biome < 0.8) {
-            float t = (biome - 0.7) / biomeWidth;
+          } else if (biome < biomeWidth * 8.0) {
+            float t = (biome - biomeWidth * 7.0) / biomeWidth;
             lowColor = mix(low7, low8, t);
             midColor = mix(mid7, mid8, t);
             highColor = mix(high7, high8, t);
-          } else if (biome < 0.9) {
-            float t = (biome - 0.8) / biomeWidth;
+          } else if (biome < biomeWidth * 9.0) {
+            float t = (biome - biomeWidth * 8.0) / biomeWidth;
             lowColor = mix(low8, low9, t);
             midColor = mix(mid8, mid9, t);
             highColor = mix(high8, high9, t);
+          } else if (biome < biomeWidth * 10.0) {
+            float t = (biome - biomeWidth * 9.0) / biomeWidth;
+            lowColor = mix(low9, low10, t);
+            midColor = mix(mid9, mid10, t);
+            highColor = mix(high9, high10, t);
+          } else if (biome < biomeWidth * 11.0) {
+            float t = (biome - biomeWidth * 10.0) / biomeWidth;
+            lowColor = mix(low10, low11, t);
+            midColor = mix(mid10, mid11, t);
+            highColor = mix(high10, high11, t);
+          } else if (biome < biomeWidth * 12.0) {
+            float t = (biome - biomeWidth * 11.0) / biomeWidth;
+            lowColor = mix(low11, low12, t);
+            midColor = mix(mid11, mid12, t);
+            highColor = mix(high11, high12, t);
+          } else if (biome < biomeWidth * 13.0) {
+            float t = (biome - biomeWidth * 12.0) / biomeWidth;
+            lowColor = mix(low12, low13, t);
+            midColor = mix(mid12, mid13, t);
+            highColor = mix(high12, high13, t);
+          } else if (biome < biomeWidth * 14.0) {
+            float t = (biome - biomeWidth * 13.0) / biomeWidth;
+            lowColor = mix(low13, low14, t);
+            midColor = mix(mid13, mid14, t);
+            highColor = mix(high13, high14, t);
           } else {
-            float t = (biome - 0.9) / biomeWidth;
-            lowColor = mix(low9, low0, t);
-            midColor = mix(mid9, mid0, t);
-            highColor = mix(high9, high0, t);
+            float t = (biome - biomeWidth * 14.0) / biomeWidth;
+            lowColor = mix(low14, low0, t);
+            midColor = mix(mid14, mid0, t);
+            highColor = mix(high14, high0, t);
           }
 
           // Elevation-based color (clamped to avoid extremes)
-          float e = clamp(vElevation / 8.0, 0.0, 1.0);
+          float e = clamp(vElevation / 10.0, 0.0, 1.0);
           vec3 color;
           if (e < 0.3) color = mix(lowColor, midColor, e / 0.3);
           else if (e < 0.6) color = mix(midColor, highColor, (e - 0.3) / 0.3);
-          else color = mix(highColor, highColor * 1.1, (e - 0.6) / 0.4); // Reduced peak brightness
+          else color = mix(highColor, highColor * 1.3 + vec3(0.08), (e - 0.6) / 0.4); // Brighter peaks
+
+          // Emissive glow patches based on noise
+          float glowNoise = noise(vWorldPos.xz * 0.02 + uTime * 0.02);
+          float glowPatch = smoothstep(0.62, 0.82, glowNoise);
+          color += highColor * 1.4 * glowPatch * 0.35;
+
+          // Glowing terrain veins
+          float veinWarp = noise(vWorldPos.xz * 0.03);
+          vec2 warpedPos = vWorldPos.xz + veinWarp * 15.0;
+          float veinPattern = noise(warpedPos * 0.08);
+          float vein = smoothstep(0.46, 0.5, veinPattern) * smoothstep(0.54, 0.5, veinPattern);
+          vec3 veinColor = vec3(0.4, 0.9, 1.0) * (0.7 + sin(uTime * 2.0) * 0.3);
+          color += veinColor * vein * 0.45;
+
+          // Energy pulse rippling across terrain
+          if (uEnergyPulseActive > 0.0) {
+            float dist = length(vWorldPos.xz - uEnergyPulseOrigin);
+            float pulseRadius = uEnergyPulseTime * 60.0;
+            float pulse = smoothstep(pulseRadius - 8.0, pulseRadius, dist)
+                        * smoothstep(pulseRadius + 8.0, pulseRadius, dist);
+            pulse *= (1.0 - uEnergyPulseTime); // Fade out over time
+            color += vec3(0.3, 0.8, 1.0) * pulse * uEnergyPulseActive * 1.5;
+          }
 
           // Audio reactivity - subtle pulse
-          color += color * uAudioBass * 0.2;
+          color += color * uAudioBass * 0.25;
 
           // Lighting (constrained range to avoid too dark/bright)
           vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
           float light = max(dot(vNormal, lightDir), 0.0) * 0.35 + 0.65; // Range: 0.65-1.0
           color *= light * uWeatherTint;
 
-          // Clamp final color to avoid pure black or white
-          // Allow slightly brighter for volcanic and frost biomes
-          color = clamp(color, vec3(0.04), vec3(0.55));
+          // Clamp final color - allow brighter now
+          color = clamp(color, vec3(0.05), vec3(0.85));
 
           gl_FragColor = vec4(color, 1.0);
         }
@@ -1279,14 +1503,8 @@ export class RoverMode extends BaseMode {
         const index = (i * (segments + 1) + j) * 3;
         const x = (j / segments - 0.5) * size;
         const z = (i / segments - 0.5) * size + offsetZ;
-        let height = this.noise.fbm(x * this.params.terrainScale, z * this.params.terrainScale, 3) * this.params.terrainHeight;
-        height += this.noise.fbm(x * this.params.terrainScale * 0.3, z * this.params.terrainScale * 0.3, 2) * this.params.terrainHeight * 0.5;
-        const craterNoise = this.noise.noise2D(x * 0.005, z * 0.005);
-        if (craterNoise > 0.7) {
-          const craterDepth = (craterNoise - 0.7) * 8;
-          height -= craterDepth * craterDepth * 2;
-        }
-        positions[index + 1] = height;
+        // Use getTerrainHeight for consistent height calculation
+        positions[index + 1] = this.getTerrainHeight(x, z);
       }
     }
     this.terrainGeometry.attributes.position.needsUpdate = true;
@@ -1294,13 +1512,105 @@ export class RoverMode extends BaseMode {
   }
 
   getTerrainHeight(x, z) {
-    let height = this.noise.fbm(x * this.params.terrainScale, z * this.params.terrainScale, 3) * this.params.terrainHeight;
-    height += this.noise.fbm(x * this.params.terrainScale * 0.3, z * this.params.terrainScale * 0.3, 2) * this.params.terrainHeight * 0.5;
-    const craterNoise = this.noise.noise2D(x * 0.005, z * 0.005);
+    const scale = this.params.terrainScale;
+    const terrainHeight = this.params.terrainHeight;
+
+    // Get biome at this position (0-1 range, 15 biomes)
+    const biome = this.getBiomeAtPosition(x, z);
+    const biomeId = Math.floor(biome * 15);
+
+    // Domain warping - warp coordinates with another noise layer for organic flow
+    const warpScale = scale * 0.4;
+    const warpX = this.noise.fbm(x * warpScale, z * warpScale, 2) * 200;
+    const warpZ = this.noise.fbm(x * warpScale + 1000, z * warpScale + 1000, 2) * 200;
+
+    // Base terrain with warped coordinates - smooth rolling foundation
+    let height = this.noise.fbm((x + warpX) * scale, (z + warpZ) * scale, 4) * terrainHeight * 0.7;
+
+    // Medium-frequency hills - the main visible hills
+    height += this.noise.fbm(x * scale * 2.5, z * scale * 2.5, 3) * terrainHeight * 0.5;
+
+    // Higher frequency detail for texture
+    height += this.noise.fbm(x * scale * 6, z * scale * 6, 2) * terrainHeight * 0.15;
+
+    // Ridged noise for occasional dramatic peaks (reduced contribution)
+    const ridged = this.noise.ridgedFbm(x * scale * 3, z * scale * 3, 3);
+    height += ridged * terrainHeight * 0.35;
+
+    // Gentle large-scale undulation
+    height += this.noise.fbm(x * scale * 0.3, z * scale * 0.3, 2) * terrainHeight * 0.25;
+
+    // Occasional dips/pools (less aggressive, smoother)
+    const dipNoise = this.noise.noise2D(x * scale * 0.8, z * scale * 0.8);
+    if (dipNoise < -0.6) {
+      const dipDepth = (-0.6 - dipNoise) * 2.5; // 0 to 1 range
+      // Smooth falloff into dip
+      height -= dipDepth * dipDepth * terrainHeight * 0.5;
+    }
+
+    // Craters
+    const craterNoise = this.noise.noise2D(x * 0.004, z * 0.004);
     if (craterNoise > 0.7) {
       const craterDepth = (craterNoise - 0.7) * 8;
       height -= craterDepth * craterDepth * 2;
     }
+
+    // Biome-specific terrain shape modifiers
+    switch (biomeId) {
+      case 3: // Dense Jungle - rolling hills with valleys
+        height *= 0.6;
+        break;
+
+      case 5: // Frozen Tundra - gentle snow drifts
+        height *= 0.4;
+        break;
+
+      case 7: // Ocean Depths - very flat with wave-like motion
+        height *= 0.15;
+        // Add subtle wave effect (uses time if available)
+        const time = this.time || 0;
+        height += Math.sin(x * 0.05 + time * 0.5) * 0.5;
+        height += Math.sin(z * 0.03 + time * 0.3) * 0.3;
+        break;
+
+      case 10: // Alpine Mountains - dramatic peaks
+        height *= 1.5;
+        // Add extra ridged peaks
+        height += this.noise.ridgedFbm(x * scale * 3, z * scale * 3, 3) * terrainHeight * 0.8;
+        break;
+
+      case 11: // Bamboo Forest - terraced hills
+        const terraceCount = 8;
+        height = Math.round(height / (terrainHeight / terraceCount)) * (terrainHeight / terraceCount);
+        height *= 0.7;
+        break;
+
+      case 12: // Bioluminescent Caves - cavern-like dips
+        height *= 0.5;
+        // Add more dramatic dips
+        const caveNoise = this.noise.noise2D(x * scale * 0.5, z * scale * 0.5);
+        if (caveNoise < -0.3) {
+          height -= ((-0.3 - caveNoise) * 3) * terrainHeight * 0.4;
+        }
+        break;
+
+      case 13: // Desert Canyons - mesas with terracing
+        const mesaTerraces = 6;
+        height = Math.round(height / (terrainHeight / mesaTerraces)) * (terrainHeight / mesaTerraces);
+        height *= 0.8;
+        // Add canyon cuts
+        const canyonNoise = this.noise.noise2D(x * 0.01, z * 0.01);
+        if (canyonNoise < -0.5) {
+          height -= terrainHeight * 0.6;
+        }
+        break;
+
+      case 14: // Mushroom Forest - organic undulation
+        height *= 0.6;
+        height += Math.sin(x * 0.15) * Math.cos(z * 0.12) * terrainHeight * 0.15;
+        break;
+    }
+
     return height;
   }
 
@@ -1369,7 +1679,11 @@ export class RoverMode extends BaseMode {
     const moonData = [
       { size: 30, distance: 400, color: 0xccbbaa, speed: 0.0001, height: 200, phase: 0 },
       { size: 15, distance: 300, color: 0xaabbcc, speed: 0.0003, height: 150, phase: Math.PI },
-      { size: 8, distance: 250, color: 0xffccaa, speed: 0.0005, height: 100, phase: Math.PI / 2 }
+      { size: 8, distance: 250, color: 0xffccaa, speed: 0.0005, height: 100, phase: Math.PI / 2 },
+      // Additional smaller moons/asteroids for more dynamic sky
+      { size: 5, distance: 180, color: 0x888899, speed: 0.0008, height: 90, phase: 0.5 },
+      { size: 3, distance: 350, color: 0x999988, speed: 0.001, height: 220, phase: 1.2 },
+      { size: 2, distance: 220, color: 0x777788, speed: 0.0015, height: 130, phase: 2.5 }
     ];
 
     moonData.forEach((data, index) => {
@@ -1435,12 +1749,14 @@ export class RoverMode extends BaseMode {
         float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float noise(vec2 p) {
           vec2 i = floor(p), f = fract(p);
-          f = f * f * (3.0 - 2.0 * f);
+          // Quintic interpolation for smooth gradients (no square artifacts)
+          f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
           return mix(mix(hash(i), hash(i + vec2(1,0)), f.x), mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), f.x), f.y);
         }
         float fbm(vec2 p) {
           float v = 0.0, a = 0.5;
-          for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+          mat2 rot = mat2(0.8, 0.6, -0.6, 0.8); // Rotate each octave to break up grid patterns
+          for (int i = 0; i < 5; i++) { v += a * noise(p); p = rot * p * 2.0; a *= 0.5; }
           return v;
         }
         void main() {
@@ -1529,28 +1845,34 @@ export class RoverMode extends BaseMode {
     this.flora = [];
     this.biomeFlora = {}; // Organized by biome type
 
-    // Create flora for each biome
+    // Create flora for each of 15 biomes
     this.createPurpleDesertFlora();      // Biome 0: Purple alien desert
     this.createCrystalTundraFlora();     // Biome 1: Crystal blue tundra
     this.createVolcanicFlora();          // Biome 2: Volcanic hellscape
-    this.createSwampFlora();             // Biome 3: Bioluminescent swamp
-    this.createDunesFlora();             // Biome 4: Golden dunes
-    this.createFrostFlora();             // Biome 5: Frost plains
-    this.createToxicFlora();             // Biome 6: Toxic marshland
-    this.createObsidianFlora();          // Biome 7: Obsidian wastes
-    this.createCoralReefFlora();         // Biome 8: Coral reef terrain
-    this.createRustFlora();              // Biome 9: Rust wastes
+    this.createJungleFlora();            // Biome 3: Dense Jungle (NEW)
+    this.createDunesFlora();             // Biome 4: Golden Savanna
+    this.createTundraFlora();            // Biome 5: Frozen Tundra (NEW)
+    this.createToxicFlora();             // Biome 6: Toxic Swamp
+    this.createOceanFlora();             // Biome 7: Ocean Depths (NEW)
+    this.createCoralReefFlora();         // Biome 8: Coral Reef
+    this.createRustFlora();              // Biome 9: Rust Wastes
+    this.createAlpineFlora();            // Biome 10: Alpine Mountains (NEW)
+    this.createBambooFlora();            // Biome 11: Bamboo Forest (NEW)
+    this.createCaveFlora();              // Biome 12: Bioluminescent Caves
+    this.createCanyonFlora();            // Biome 13: Desert Canyons (NEW)
+    this.createMushroomFlora();          // Biome 14: Mushroom Forest
 
     // Floating spores (universal)
     this.createFloatingSpores();
   }
 
   // Helper to calculate biome at a world position (must match shader logic)
+  // Now 15 biomes with slower cycling for larger biome areas
   getBiomeAtPosition(worldX, worldZ) {
-    const zBiome = worldZ * 0.00015;
+    const zBiome = worldZ * 0.0001; // Slower cycling for larger biomes
     // Simplified noise approximation
-    const xVar = Math.sin(worldX * 0.003) * Math.cos(worldZ * 0.002) * 0.1;
-    const localNoise = Math.sin(worldX * 0.01 + worldZ * 0.01) * 0.05;
+    const xVar = Math.sin(worldX * 0.002) * Math.cos(worldZ * 0.0015) * 0.08;
+    const localNoise = Math.sin(worldX * 0.005 + worldZ * 0.005) * 0.03;
     return ((zBiome + xVar + localNoise) % 1 + 1) % 1; // 0-1 range
   }
 
@@ -1699,65 +2021,7 @@ export class RoverMode extends BaseMode {
     this.emberMat = emberMat;
   }
 
-  // Biome 3: Bioluminescent swamp - glowing mushrooms and hanging vines
-  createSwampFlora() {
-    this.biomeFlora[3] = [];
-
-    const glowMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(1.0, 0.3, 0.8) } },
-      vertexShader: `varying vec3 vNormal; void main() { vNormal = normal; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-      fragmentShader: `
-        uniform float uTime;
-        uniform vec3 uColor;
-        varying vec3 vNormal;
-        void main() {
-          float pulse = sin(uTime * 2.0) * 0.3 + 0.7;
-          float rim = pow(1.0 - abs(dot(vNormal, vec3(0.0, 1.0, 0.0))), 1.5);
-          vec3 color = uColor * pulse * (0.6 + rim * 0.6);
-          gl_FragColor = vec4(color, 1.0);
-        }
-      `,
-      transparent: true,
-      blending: THREE.AdditiveBlending
-    });
-
-    for (let i = 0; i < 60; i++) {
-      const mushroom = new THREE.Group();
-
-      // Stem
-      const stem = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.08, 0.15, 1, 6),
-        new THREE.MeshBasicMaterial({ color: 0x553355 })
-      );
-      stem.position.y = 0.5;
-      mushroom.add(stem);
-
-      // Glowing cap
-      const cap = new THREE.Mesh(
-        new THREE.SphereGeometry(0.4, 8, 8),
-        glowMat.clone()
-      );
-      cap.scale.set(1, 0.5, 1);
-      cap.position.y = 1;
-      // Random pink/purple/cyan colors
-      const hue = Math.random() > 0.5 ? 0.85 : 0.55;
-      cap.material.uniforms.uColor.value.setHSL(hue, 0.9, 0.6);
-      mushroom.add(cap);
-
-      const scale = 0.5 + Math.random() * 1.5;
-      mushroom.scale.setScalar(scale);
-      mushroom.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
-      mushroom.userData.worldX = mushroom.position.x;
-      mushroom.userData.worldZ = mushroom.position.z;
-      mushroom.userData.biome = 3;
-      mushroom.visible = false;
-      this.scene.add(mushroom);
-      this.biomeFlora[3].push(mushroom);
-    }
-    this.glowMat = glowMat;
-  }
-
-  // Biome 4: Golden dunes - alien cacti and tumbleweeds
+  // Biome 4: Golden Savanna - alien cacti and tumbleweeds
   createDunesFlora() {
     this.biomeFlora[4] = [];
 
@@ -1810,61 +2074,7 @@ export class RoverMode extends BaseMode {
     }
   }
 
-  // Biome 5: Frost plains - ice spikes and frozen grass
-  createFrostFlora() {
-    this.biomeFlora[5] = [];
-
-    for (let i = 0; i < 50; i++) {
-      const iceSpike = new THREE.Group();
-
-      // Main spike
-      const height = 1 + Math.random() * 3;
-      const spike = new THREE.Mesh(
-        new THREE.ConeGeometry(0.3, height, 6),
-        new THREE.MeshBasicMaterial({
-          color: 0xaaddff,
-          transparent: true,
-          opacity: 0.7
-        })
-      );
-      spike.position.y = height / 2;
-      iceSpike.add(spike);
-
-      // Smaller surrounding spikes
-      for (let s = 0; s < 2 + Math.floor(Math.random() * 3); s++) {
-        const smallHeight = height * (0.3 + Math.random() * 0.4);
-        const small = new THREE.Mesh(
-          new THREE.ConeGeometry(0.15, smallHeight, 5),
-          new THREE.MeshBasicMaterial({
-            color: 0xcceeFF,
-            transparent: true,
-            opacity: 0.6
-          })
-        );
-        small.position.set(
-          (Math.random() - 0.5) * 0.8,
-          smallHeight / 2,
-          (Math.random() - 0.5) * 0.8
-        );
-        small.rotation.set(
-          (Math.random() - 0.5) * 0.3,
-          0,
-          (Math.random() - 0.5) * 0.3
-        );
-        iceSpike.add(small);
-      }
-
-      iceSpike.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
-      iceSpike.userData.worldX = iceSpike.position.x;
-      iceSpike.userData.worldZ = iceSpike.position.z;
-      iceSpike.userData.biome = 5;
-      iceSpike.visible = false;
-      this.scene.add(iceSpike);
-      this.biomeFlora[5].push(iceSpike);
-    }
-  }
-
-  // Biome 6: Toxic marshland - poison mushrooms and bubbling pools
+  // Biome 6: Toxic Swamp - poison mushrooms and bubbling pools
   createToxicFlora() {
     this.biomeFlora[6] = [];
 
@@ -1928,58 +2138,7 @@ export class RoverMode extends BaseMode {
     this.toxicMat = toxicMat;
   }
 
-  // Biome 7: Obsidian wastes - dead trees and dark crystals
-  createObsidianFlora() {
-    this.biomeFlora[7] = [];
-
-    for (let i = 0; i < 35; i++) {
-      const deadTree = new THREE.Group();
-
-      // Twisted dead trunk
-      const height = 2 + Math.random() * 4;
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.1, 0.4, height, 6),
-        new THREE.MeshBasicMaterial({ color: 0x111115 })
-      );
-      trunk.position.y = height / 2;
-      trunk.rotation.set(
-        (Math.random() - 0.5) * 0.2,
-        0,
-        (Math.random() - 0.5) * 0.3
-      );
-      deadTree.add(trunk);
-
-      // Dead branches
-      for (let b = 0; b < 2 + Math.floor(Math.random() * 3); b++) {
-        const branchLen = 0.5 + Math.random() * 1.5;
-        const branch = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.03, 0.08, branchLen, 4),
-          new THREE.MeshBasicMaterial({ color: 0x0a0a0e })
-        );
-        branch.position.set(
-          0,
-          height * (0.5 + Math.random() * 0.4),
-          0
-        );
-        branch.rotation.set(
-          (Math.random() - 0.5) * 1.5,
-          Math.random() * Math.PI,
-          Math.random() * 0.8 + 0.3
-        );
-        deadTree.add(branch);
-      }
-
-      deadTree.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
-      deadTree.userData.worldX = deadTree.position.x;
-      deadTree.userData.worldZ = deadTree.position.z;
-      deadTree.userData.biome = 7;
-      deadTree.visible = false;
-      this.scene.add(deadTree);
-      this.biomeFlora[7].push(deadTree);
-    }
-  }
-
-  // Biome 8: Coral reef terrain - land coral and anemones
+  // Biome 8: Coral Reef terrain - land coral and anemones
   createCoralReefFlora() {
     this.biomeFlora[8] = [];
 
@@ -2110,6 +2269,595 @@ export class RoverMode extends BaseMode {
     }
   }
 
+  // Biome 3: Dense Jungle - tall trees with broad leaves, vines, ferns
+  createJungleFlora() {
+    this.biomeFlora[3] = [];
+
+    for (let i = 0; i < 50; i++) {
+      const tree = new THREE.Group();
+
+      // Thick brown trunk
+      const height = 4 + Math.random() * 6;
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2, 0.4, height, 8),
+        new THREE.MeshBasicMaterial({ color: 0x3d2817 })
+      );
+      trunk.position.y = height / 2;
+      tree.add(trunk);
+
+      // Broad leaves at top
+      const leafCount = 4 + Math.floor(Math.random() * 4);
+      for (let l = 0; l < leafCount; l++) {
+        const leaf = new THREE.Mesh(
+          new THREE.PlaneGeometry(1.5 + Math.random() * 1, 0.6 + Math.random() * 0.4),
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color().setHSL(0.28 + Math.random() * 0.05, 0.7, 0.2 + Math.random() * 0.1),
+            side: THREE.DoubleSide
+          })
+        );
+        leaf.position.set(
+          (Math.random() - 0.5) * 1,
+          height - 0.5 + Math.random() * 1,
+          (Math.random() - 0.5) * 1
+        );
+        leaf.rotation.set(
+          0.2 + Math.random() * 0.5,
+          Math.random() * Math.PI * 2,
+          Math.random() * 0.3
+        );
+        tree.add(leaf);
+      }
+
+      // Hanging vines
+      const vineCount = Math.floor(Math.random() * 3);
+      for (let v = 0; v < vineCount; v++) {
+        const vineLength = 2 + Math.random() * 3;
+        const vine = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.02, vineLength, 4),
+          new THREE.MeshBasicMaterial({ color: 0x2d4a1c })
+        );
+        vine.position.set(
+          (Math.random() - 0.5) * 0.8,
+          height - vineLength / 2,
+          (Math.random() - 0.5) * 0.8
+        );
+        tree.add(vine);
+      }
+
+      tree.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      tree.userData.worldX = tree.position.x;
+      tree.userData.worldZ = tree.position.z;
+      tree.userData.biome = 3;
+      tree.visible = false;
+      this.scene.add(tree);
+      this.biomeFlora[3].push(tree);
+    }
+
+    // Ferns on ground
+    for (let i = 0; i < 40; i++) {
+      const fern = new THREE.Group();
+      const frondCount = 5 + Math.floor(Math.random() * 4);
+
+      for (let f = 0; f < frondCount; f++) {
+        const frond = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.8, 0.2),
+          new THREE.MeshBasicMaterial({ color: 0x1a3d0c, side: THREE.DoubleSide })
+        );
+        frond.position.y = 0.3;
+        frond.rotation.set(-0.5, (f / frondCount) * Math.PI * 2, 0);
+        fern.add(frond);
+      }
+
+      const scale = 0.5 + Math.random() * 0.8;
+      fern.scale.setScalar(scale);
+      fern.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      fern.userData.worldX = fern.position.x;
+      fern.userData.worldZ = fern.position.z;
+      fern.userData.biome = 3;
+      fern.visible = false;
+      this.scene.add(fern);
+      this.biomeFlora[3].push(fern);
+    }
+  }
+
+  // Biome 5: Frozen Tundra - snow-covered pines and ice formations
+  createTundraFlora() {
+    this.biomeFlora[5] = [];
+
+    // Snow-covered pine trees
+    for (let i = 0; i < 40; i++) {
+      const pine = new THREE.Group();
+
+      const height = 3 + Math.random() * 5;
+
+      // Brown trunk
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.1, 0.2, height * 0.3, 6),
+        new THREE.MeshBasicMaterial({ color: 0x4a3828 })
+      );
+      trunk.position.y = height * 0.15;
+      pine.add(trunk);
+
+      // Snowy cone layers
+      const layers = 3 + Math.floor(Math.random() * 2);
+      for (let l = 0; l < layers; l++) {
+        const layerHeight = height * 0.3 + l * (height * 0.2);
+        const coneSize = (1 - l * 0.25) * 1.5;
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(coneSize, height * 0.25, 8),
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color().setHSL(0.35, 0.3, 0.85 - l * 0.1) // Snowy white-green
+          })
+        );
+        cone.position.y = layerHeight;
+        pine.add(cone);
+      }
+
+      pine.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      pine.userData.worldX = pine.position.x;
+      pine.userData.worldZ = pine.position.z;
+      pine.userData.biome = 5;
+      pine.visible = false;
+      this.scene.add(pine);
+      this.biomeFlora[5].push(pine);
+    }
+
+    // Ice formations
+    for (let i = 0; i < 30; i++) {
+      const ice = new THREE.Group();
+      const height = 1 + Math.random() * 2;
+
+      const shard = new THREE.Mesh(
+        new THREE.ConeGeometry(0.3, height, 6),
+        new THREE.MeshBasicMaterial({
+          color: 0xc0e8ff,
+          transparent: true,
+          opacity: 0.75
+        })
+      );
+      shard.position.y = height / 2;
+      ice.add(shard);
+
+      ice.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      ice.userData.worldX = ice.position.x;
+      ice.userData.worldZ = ice.position.z;
+      ice.userData.biome = 5;
+      ice.visible = false;
+      this.scene.add(ice);
+      this.biomeFlora[5].push(ice);
+    }
+  }
+
+  // Biome 7: Ocean Depths - kelp, seaweed, anemones
+  createOceanFlora() {
+    this.biomeFlora[7] = [];
+
+    // Kelp strands
+    for (let i = 0; i < 50; i++) {
+      const kelp = new THREE.Group();
+      const height = 3 + Math.random() * 5;
+      const segments = 5 + Math.floor(Math.random() * 4);
+
+      for (let s = 0; s < segments; s++) {
+        const segHeight = height / segments;
+        const seg = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.05, 0.08, segHeight, 4),
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color().setHSL(0.3, 0.5, 0.15 + Math.random() * 0.1)
+          })
+        );
+        seg.position.y = s * segHeight + segHeight / 2;
+        seg.rotation.x = (Math.random() - 0.5) * 0.2;
+        seg.rotation.z = (Math.random() - 0.5) * 0.2;
+        kelp.add(seg);
+
+        // Leaf blades
+        if (s > 1 && Math.random() > 0.4) {
+          const blade = new THREE.Mesh(
+            new THREE.PlaneGeometry(0.4, 0.15),
+            new THREE.MeshBasicMaterial({ color: 0x1a4d26, side: THREE.DoubleSide })
+          );
+          blade.position.set(0.15, s * segHeight, 0);
+          blade.rotation.y = Math.random() * Math.PI;
+          kelp.add(blade);
+        }
+      }
+
+      kelp.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      kelp.userData.worldX = kelp.position.x;
+      kelp.userData.worldZ = kelp.position.z;
+      kelp.userData.biome = 7;
+      kelp.visible = false;
+      this.scene.add(kelp);
+      this.biomeFlora[7].push(kelp);
+    }
+
+    // Sea anemones
+    for (let i = 0; i < 30; i++) {
+      const anemone = new THREE.Group();
+
+      // Base
+      const base = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.4, 0.3, 8),
+        new THREE.MeshBasicMaterial({ color: 0x2a1a3a })
+      );
+      base.position.y = 0.15;
+      anemone.add(base);
+
+      // Tentacles
+      const tentacleCount = 8 + Math.floor(Math.random() * 6);
+      const tentacleColor = new THREE.Color().setHSL(
+        Math.random() > 0.5 ? 0.55 : 0.85,
+        0.6,
+        0.4
+      );
+      for (let t = 0; t < tentacleCount; t++) {
+        const tentacle = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.04, 0.5 + Math.random() * 0.3, 4),
+          new THREE.MeshBasicMaterial({ color: tentacleColor })
+        );
+        const angle = (t / tentacleCount) * Math.PI * 2;
+        tentacle.position.set(
+          Math.cos(angle) * 0.2,
+          0.5,
+          Math.sin(angle) * 0.2
+        );
+        tentacle.rotation.x = 0.3 + Math.random() * 0.3;
+        tentacle.rotation.y = angle;
+        anemone.add(tentacle);
+      }
+
+      const scale = 0.6 + Math.random() * 0.8;
+      anemone.scale.setScalar(scale);
+      anemone.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      anemone.userData.worldX = anemone.position.x;
+      anemone.userData.worldZ = anemone.position.z;
+      anemone.userData.biome = 7;
+      anemone.visible = false;
+      this.scene.add(anemone);
+      this.biomeFlora[7].push(anemone);
+    }
+  }
+
+  // Biome 10: Alpine Mountains - sparse pines, rocky outcrops, alpine flowers
+  createAlpineFlora() {
+    this.biomeFlora[10] = [];
+
+    // Sparse windswept pines
+    for (let i = 0; i < 25; i++) {
+      const pine = new THREE.Group();
+      const height = 2 + Math.random() * 3;
+
+      // Gnarled trunk
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.08, 0.15, height * 0.6, 5),
+        new THREE.MeshBasicMaterial({ color: 0x3d3028 })
+      );
+      trunk.position.y = height * 0.3;
+      trunk.rotation.z = (Math.random() - 0.5) * 0.3; // Wind-bent
+      pine.add(trunk);
+
+      // Sparse foliage
+      const foliage = new THREE.Mesh(
+        new THREE.ConeGeometry(0.6, height * 0.5, 6),
+        new THREE.MeshBasicMaterial({ color: 0x2d4a28 })
+      );
+      foliage.position.y = height * 0.7;
+      pine.add(foliage);
+
+      pine.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      pine.userData.worldX = pine.position.x;
+      pine.userData.worldZ = pine.position.z;
+      pine.userData.biome = 10;
+      pine.visible = false;
+      this.scene.add(pine);
+      this.biomeFlora[10].push(pine);
+    }
+
+    // Rocky outcrops
+    for (let i = 0; i < 35; i++) {
+      const rock = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.3 + Math.random() * 0.6, 0),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(0.08, 0.1, 0.35 + Math.random() * 0.15)
+        })
+      );
+      rock.scale.y = 0.5 + Math.random() * 0.5;
+      rock.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      rock.userData.worldX = rock.position.x;
+      rock.userData.worldZ = rock.position.z;
+      rock.userData.biome = 10;
+      rock.visible = false;
+      this.scene.add(rock);
+      this.biomeFlora[10].push(rock);
+    }
+
+    // Alpine flowers (small colorful dots)
+    for (let i = 0; i < 40; i++) {
+      const flower = new THREE.Mesh(
+        new THREE.SphereGeometry(0.08, 6, 6),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(Math.random(), 0.8, 0.6)
+        })
+      );
+      flower.position.set((Math.random() - 0.5) * 200, 0.1, (Math.random() - 0.5) * 200);
+      flower.userData.worldX = flower.position.x;
+      flower.userData.worldZ = flower.position.z;
+      flower.userData.biome = 10;
+      flower.visible = false;
+      this.scene.add(flower);
+      this.biomeFlora[10].push(flower);
+    }
+  }
+
+  // Biome 11: Bamboo Forest - tall bamboo stalks in clusters
+  createBambooFlora() {
+    this.biomeFlora[11] = [];
+
+    for (let i = 0; i < 60; i++) {
+      const bamboo = new THREE.Group();
+      const height = 5 + Math.random() * 8;
+
+      // Main stalk with segments
+      const segments = Math.floor(height / 1.5);
+      for (let s = 0; s < segments; s++) {
+        const segHeight = height / segments;
+        const seg = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.08, 0.1, segHeight - 0.05, 8),
+          new THREE.MeshBasicMaterial({
+            color: new THREE.Color().setHSL(0.22, 0.4, 0.45 + Math.random() * 0.1)
+          })
+        );
+        seg.position.y = s * segHeight + segHeight / 2;
+        bamboo.add(seg);
+
+        // Node ring
+        const node = new THREE.Mesh(
+          new THREE.TorusGeometry(0.1, 0.02, 4, 8),
+          new THREE.MeshBasicMaterial({ color: 0x5d7a48 })
+        );
+        node.position.y = s * segHeight;
+        node.rotation.x = Math.PI / 2;
+        bamboo.add(node);
+
+        // Leaves at some nodes
+        if (s > segments * 0.5 && Math.random() > 0.5) {
+          const leafGroup = new THREE.Group();
+          for (let l = 0; l < 3; l++) {
+            const leaf = new THREE.Mesh(
+              new THREE.PlaneGeometry(0.6, 0.12),
+              new THREE.MeshBasicMaterial({ color: 0x4a6b35, side: THREE.DoubleSide })
+            );
+            leaf.rotation.set(-0.3, l * 2.1, 0);
+            leafGroup.add(leaf);
+          }
+          leafGroup.position.y = s * segHeight;
+          bamboo.add(leafGroup);
+        }
+      }
+
+      bamboo.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      bamboo.userData.worldX = bamboo.position.x;
+      bamboo.userData.worldZ = bamboo.position.z;
+      bamboo.userData.biome = 11;
+      bamboo.visible = false;
+      this.scene.add(bamboo);
+      this.biomeFlora[11].push(bamboo);
+    }
+  }
+
+  // Biome 12: Bioluminescent Caves - glowing stalactites, cave mushrooms
+  createCaveFlora() {
+    this.biomeFlora[12] = [];
+
+    const glowMat = new THREE.ShaderMaterial({
+      uniforms: { uTime: { value: 0 }, uColor: { value: new THREE.Color(0.3, 0.5, 1.0) } },
+      vertexShader: `varying vec3 vNormal; void main() { vNormal = normal; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+      fragmentShader: `
+        uniform float uTime;
+        uniform vec3 uColor;
+        varying vec3 vNormal;
+        void main() {
+          float pulse = sin(uTime * 1.5) * 0.3 + 0.7;
+          float rim = pow(1.0 - abs(dot(vNormal, vec3(0.0, 1.0, 0.0))), 1.5);
+          vec3 color = uColor * pulse * (0.5 + rim * 0.5);
+          gl_FragColor = vec4(color, 1.0);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending
+    });
+
+    // Glowing stalagmites
+    for (let i = 0; i < 40; i++) {
+      const stalagmite = new THREE.Mesh(
+        new THREE.ConeGeometry(0.2 + Math.random() * 0.3, 1 + Math.random() * 2, 6),
+        glowMat.clone()
+      );
+      stalagmite.material.uniforms.uColor.value.setHSL(
+        0.55 + Math.random() * 0.15,
+        0.7,
+        0.5
+      );
+      stalagmite.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      stalagmite.userData.worldX = stalagmite.position.x;
+      stalagmite.userData.worldZ = stalagmite.position.z;
+      stalagmite.userData.biome = 12;
+      stalagmite.visible = false;
+      this.scene.add(stalagmite);
+      this.biomeFlora[12].push(stalagmite);
+    }
+
+    // Cave mushrooms (similar to old swamp)
+    for (let i = 0; i < 35; i++) {
+      const mushroom = new THREE.Group();
+
+      const stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.1, 0.6, 5),
+        new THREE.MeshBasicMaterial({ color: 0x2a2035 })
+      );
+      stem.position.y = 0.3;
+      mushroom.add(stem);
+
+      const cap = new THREE.Mesh(
+        new THREE.SphereGeometry(0.25, 8, 8),
+        glowMat.clone()
+      );
+      cap.scale.set(1, 0.5, 1);
+      cap.position.y = 0.65;
+      cap.material.uniforms.uColor.value.setHSL(
+        Math.random() > 0.5 ? 0.75 : 0.55,
+        0.8,
+        0.5
+      );
+      mushroom.add(cap);
+
+      const scale = 0.6 + Math.random() * 1.2;
+      mushroom.scale.setScalar(scale);
+      mushroom.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      mushroom.userData.worldX = mushroom.position.x;
+      mushroom.userData.worldZ = mushroom.position.z;
+      mushroom.userData.biome = 12;
+      mushroom.visible = false;
+      this.scene.add(mushroom);
+      this.biomeFlora[12].push(mushroom);
+    }
+  }
+
+  // Biome 13: Desert Canyons - sparse shrubs, tumbleweeds, rock formations
+  createCanyonFlora() {
+    this.biomeFlora[13] = [];
+
+    // Desert shrubs
+    for (let i = 0; i < 35; i++) {
+      const shrub = new THREE.Group();
+
+      const branchCount = 4 + Math.floor(Math.random() * 4);
+      for (let b = 0; b < branchCount; b++) {
+        const branch = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.04, 0.5 + Math.random() * 0.3, 4),
+          new THREE.MeshBasicMaterial({ color: 0x6b5a42 })
+        );
+        branch.position.y = 0.3;
+        branch.rotation.set(
+          0.5 + Math.random() * 0.5,
+          (b / branchCount) * Math.PI * 2,
+          0
+        );
+        shrub.add(branch);
+      }
+
+      // Sparse sage-green leaves
+      for (let l = 0; l < 6; l++) {
+        const leaf = new THREE.Mesh(
+          new THREE.SphereGeometry(0.08, 4, 4),
+          new THREE.MeshBasicMaterial({ color: 0x7a8a65 })
+        );
+        leaf.position.set(
+          (Math.random() - 0.5) * 0.5,
+          0.3 + Math.random() * 0.3,
+          (Math.random() - 0.5) * 0.5
+        );
+        shrub.add(leaf);
+      }
+
+      const scale = 0.6 + Math.random() * 0.8;
+      shrub.scale.setScalar(scale);
+      shrub.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      shrub.userData.worldX = shrub.position.x;
+      shrub.userData.worldZ = shrub.position.z;
+      shrub.userData.biome = 13;
+      shrub.visible = false;
+      this.scene.add(shrub);
+      this.biomeFlora[13].push(shrub);
+    }
+
+    // Rock formations / boulders
+    for (let i = 0; i < 30; i++) {
+      const rock = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.5 + Math.random() * 1, 0),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(0.08, 0.4, 0.4 + Math.random() * 0.15)
+        })
+      );
+      rock.scale.set(1, 0.5 + Math.random() * 0.5, 1);
+      rock.rotation.y = Math.random() * Math.PI;
+      rock.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      rock.userData.worldX = rock.position.x;
+      rock.userData.worldZ = rock.position.z;
+      rock.userData.biome = 13;
+      rock.visible = false;
+      this.scene.add(rock);
+      this.biomeFlora[13].push(rock);
+    }
+  }
+
+  // Biome 14: Mushroom Forest - giant colorful mushrooms
+  createMushroomFlora() {
+    this.biomeFlora[14] = [];
+
+    for (let i = 0; i < 50; i++) {
+      const mushroom = new THREE.Group();
+
+      const height = 1.5 + Math.random() * 4;
+
+      // Thick stem
+      const stem = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.2, 0.35, height, 8),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(0.08, 0.2, 0.7)
+        })
+      );
+      stem.position.y = height / 2;
+      mushroom.add(stem);
+
+      // Large cap
+      const capSize = 0.8 + Math.random() * 1.2;
+      const cap = new THREE.Mesh(
+        new THREE.SphereGeometry(capSize, 12, 8),
+        new THREE.MeshBasicMaterial({
+          color: new THREE.Color().setHSL(
+            Math.random() > 0.5 ? 0.85 + Math.random() * 0.1 : 0.75 + Math.random() * 0.08,
+            0.6,
+            0.4 + Math.random() * 0.2
+          )
+        })
+      );
+      cap.scale.set(1, 0.4, 1);
+      cap.position.y = height;
+      mushroom.add(cap);
+
+      // Spots on cap
+      const spotCount = 3 + Math.floor(Math.random() * 5);
+      for (let s = 0; s < spotCount; s++) {
+        const spot = new THREE.Mesh(
+          new THREE.CircleGeometry(0.1 + Math.random() * 0.1, 6),
+          new THREE.MeshBasicMaterial({
+            color: 0xffeedd,
+            side: THREE.DoubleSide
+          })
+        );
+        const angle = Math.random() * Math.PI * 2;
+        const radius = Math.random() * capSize * 0.7;
+        spot.position.set(
+          Math.cos(angle) * radius,
+          height + 0.15,
+          Math.sin(angle) * radius
+        );
+        spot.rotation.x = -Math.PI / 2;
+        mushroom.add(spot);
+      }
+
+      mushroom.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
+      mushroom.userData.worldX = mushroom.position.x;
+      mushroom.userData.worldZ = mushroom.position.z;
+      mushroom.userData.biome = 14;
+      mushroom.visible = false;
+      this.scene.add(mushroom);
+      this.biomeFlora[14].push(mushroom);
+    }
+  }
+
   createFloatingSpores() {
     const sporeCount = 300;
     const geometry = new THREE.BufferGeometry();
@@ -2232,7 +2980,7 @@ export class RoverMode extends BaseMode {
 
   createRuins() {
     const ruinGeom = new THREE.BoxGeometry(3, 5, 3);
-    const ruinMat = new THREE.MeshStandardMaterial({ color: 0x333340, roughness: 0.9 });
+    const ruinMat = new THREE.MeshBasicMaterial({ color: 0x6a6a75 }); // Brighter ruins
 
     for (let i = 0; i < 25; i++) {
       const ruin = new THREE.Group();
@@ -2299,9 +3047,9 @@ export class RoverMode extends BaseMode {
   }
 
   createCrashedShips() {
-    // Simple crashed ship shapes
+    // Simple crashed ship shapes - BRIGHTER
     const hullGeom = new THREE.ConeGeometry(3, 10, 8);
-    const hullMat = new THREE.MeshStandardMaterial({ color: 0x445566, roughness: 0.7, metalness: 0.3 });
+    const hullMat = new THREE.MeshBasicMaterial({ color: 0x7a8899 }); // Brighter metallic blue-grey
 
     for (let i = 0; i < 10; i++) {
       const ship = new THREE.Mesh(hullGeom, hullMat);
@@ -2334,24 +3082,30 @@ export class RoverMode extends BaseMode {
   }
 
   createRockFormations() {
-    // Scattered boulders of various sizes
+    // Scattered boulders of various sizes - BRIGHTER materials
     const rockGeoms = [
       new THREE.DodecahedronGeometry(1, 0),
       new THREE.IcosahedronGeometry(1, 0),
       new THREE.OctahedronGeometry(1, 0)
     ];
 
-    const rockMat = new THREE.MeshStandardMaterial({
-      color: 0x444455,
-      roughness: 0.95,
-      metalness: 0.05
-    });
+    // Use MeshBasicMaterial for visibility without lighting dependency
+    const rockColors = [
+      0x6a6a7a, // Blue-grey
+      0x7a6a5a, // Brown-grey
+      0x5a6a6a, // Teal-grey
+      0x7a5a6a, // Purple-grey
+      0x6a7a5a  // Green-grey
+    ];
 
     // Create 300 scattered boulders
     this.boulders = [];
     for (let i = 0; i < 300; i++) {
       const geom = rockGeoms[Math.floor(Math.random() * rockGeoms.length)];
-      const rock = new THREE.Mesh(geom, rockMat.clone());
+      const baseColor = rockColors[Math.floor(Math.random() * rockColors.length)];
+      const rock = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+        color: baseColor
+      }));
 
       const scale = 0.3 + Math.random() * 2.5;
       rock.scale.set(
@@ -2371,9 +3125,12 @@ export class RoverMode extends BaseMode {
         (Math.random() - 0.5) * 200
       );
 
-      // Vary rock colors slightly
-      const colorShift = Math.random() * 0.1;
-      rock.material.color.setRGB(0.25 + colorShift, 0.25 + colorShift, 0.3 + colorShift);
+      // Add color variation
+      const col = rock.material.color;
+      const variation = 0.15;
+      col.r = Math.min(1, col.r + (Math.random() - 0.5) * variation);
+      col.g = Math.min(1, col.g + (Math.random() - 0.5) * variation);
+      col.b = Math.min(1, col.b + (Math.random() - 0.5) * variation);
 
       rock.userData.worldX = rock.position.x;
       rock.userData.worldZ = rock.position.z;
@@ -2388,10 +3145,13 @@ export class RoverMode extends BaseMode {
       const clusterX = (Math.random() - 0.5) * 200;
       const clusterZ = (Math.random() - 0.5) * 200;
       const clusterSize = 3 + Math.random() * 8;
+      const clusterColor = rockColors[Math.floor(Math.random() * rockColors.length)];
 
       for (let j = 0; j < 5 + Math.floor(Math.random() * 8); j++) {
         const geom = rockGeoms[Math.floor(Math.random() * rockGeoms.length)];
-        const rock = new THREE.Mesh(geom, rockMat.clone());
+        const rock = new THREE.Mesh(geom, new THREE.MeshBasicMaterial({
+          color: clusterColor
+        }));
 
         const scale = 0.5 + Math.random() * 2;
         rock.scale.set(scale, scale * 0.6, scale);
@@ -2402,6 +3162,12 @@ export class RoverMode extends BaseMode {
           0,
           clusterZ + (Math.random() - 0.5) * clusterSize
         );
+
+        // Slight color variation within cluster
+        const col = rock.material.color;
+        col.r = Math.min(1, col.r + (Math.random() - 0.5) * 0.1);
+        col.g = Math.min(1, col.g + (Math.random() - 0.5) * 0.1);
+        col.b = Math.min(1, col.b + (Math.random() - 0.5) * 0.1);
 
         rock.userData.worldX = rock.position.x;
         rock.userData.worldZ = rock.position.z;
@@ -2414,17 +3180,22 @@ export class RoverMode extends BaseMode {
   }
 
   createRockPillars() {
-    // Tall rock spires/pillars
+    // Tall rock spires/pillars - BRIGHTER materials
     const pillarGeom = new THREE.CylinderGeometry(0.3, 1, 1, 6);
 
-    const pillarMat = new THREE.MeshStandardMaterial({
-      color: 0x3a3a45,
-      roughness: 0.9
-    });
+    const pillarColors = [
+      0x7a7a8a, // Light grey-blue
+      0x8a7a6a, // Tan
+      0x6a8a7a, // Sage
+      0x8a6a7a  // Mauve
+    ];
 
     this.rockPillars = [];
     for (let i = 0; i < 60; i++) {
-      const pillar = new THREE.Mesh(pillarGeom, pillarMat.clone());
+      const baseColor = pillarColors[Math.floor(Math.random() * pillarColors.length)];
+      const pillar = new THREE.Mesh(pillarGeom, new THREE.MeshBasicMaterial({
+        color: baseColor
+      }));
 
       const height = 3 + Math.random() * 12;
       const width = 0.5 + Math.random() * 1.5;
@@ -2439,6 +3210,12 @@ export class RoverMode extends BaseMode {
       pillar.rotation.y = Math.random() * Math.PI;
       pillar.rotation.x = (Math.random() - 0.5) * 0.2;
       pillar.rotation.z = (Math.random() - 0.5) * 0.2;
+
+      // Add color variation
+      const col = pillar.material.color;
+      col.r = Math.min(1, col.r + (Math.random() - 0.5) * 0.15);
+      col.g = Math.min(1, col.g + (Math.random() - 0.5) * 0.15);
+      col.b = Math.min(1, col.b + (Math.random() - 0.5) * 0.15);
 
       pillar.userData.worldX = pillar.position.x;
       pillar.userData.worldZ = pillar.position.z;
@@ -2531,7 +3308,7 @@ export class RoverMode extends BaseMode {
   }
 
   createCraters() {
-    // Impact craters with debris rings
+    // Impact craters with debris rings - BRIGHTER
     this.craters = [];
 
     for (let i = 0; i < 25; i++) {
@@ -2541,9 +3318,8 @@ export class RoverMode extends BaseMode {
       // Crater rim - ring of rocks
       const rimRockCount = 8 + Math.floor(Math.random() * 12);
       const rockGeom = new THREE.DodecahedronGeometry(1, 0);
-      const rockMat = new THREE.MeshStandardMaterial({
-        color: 0x4a4a55,
-        roughness: 0.9
+      const rockMat = new THREE.MeshBasicMaterial({
+        color: 0x7a7a85  // Brighter crater rocks
       });
 
       for (let j = 0; j < rimRockCount; j++) {
@@ -2595,17 +3371,16 @@ export class RoverMode extends BaseMode {
   }
 
   createGeysers() {
-    // Steam vents with particle effects
+    // Steam vents with particle effects - BRIGHTER
     this.geysers = [];
 
     for (let i = 0; i < 20; i++) {
       const geyser = new THREE.Group();
 
-      // Vent mound
+      // Vent mound - brighter volcanic color
       const moundGeom = new THREE.ConeGeometry(1.5, 1, 8);
-      const moundMat = new THREE.MeshStandardMaterial({
-        color: 0x554433,
-        roughness: 0.95
+      const moundMat = new THREE.MeshBasicMaterial({
+        color: 0x8a6655  // Brighter reddish-brown
       });
       const mound = new THREE.Mesh(moundGeom, moundMat);
       mound.position.y = 0.5;
@@ -2674,13 +3449,12 @@ export class RoverMode extends BaseMode {
   }
 
   createBonePiles() {
-    // Alien skeleton/fossil remains
+    // Alien skeleton/fossil remains - BRIGHTER
     this.bonePiles = [];
 
     const boneGeom = new THREE.CylinderGeometry(0.1, 0.15, 1, 6);
-    const boneMat = new THREE.MeshStandardMaterial({
-      color: 0xccbbaa,
-      roughness: 0.8
+    const boneMat = new THREE.MeshBasicMaterial({
+      color: 0xddccbb  // Brighter bone color
     });
 
     for (let i = 0; i < 35; i++) {
@@ -2732,13 +3506,12 @@ export class RoverMode extends BaseMode {
   }
 
   createStoneCircles() {
-    // Ancient alien stone circles/henges
+    // Ancient alien stone circles/henges - BRIGHTER
     this.stoneCircles = [];
 
     const stoneGeom = new THREE.BoxGeometry(1, 1, 0.5);
-    const stoneMat = new THREE.MeshStandardMaterial({
-      color: 0x3a3a42,
-      roughness: 0.9
+    const stoneMat = new THREE.MeshBasicMaterial({
+      color: 0x6a6a72  // Brighter stone color
     });
 
     for (let i = 0; i < 12; i++) {
@@ -3678,8 +4451,21 @@ export class RoverMode extends BaseMode {
           return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
         }
 
-        float noise(vec2 p) {
+        // Smooth noise function to avoid blocky artifacts
+        float hash(vec2 p) {
           return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        float noise(vec2 p) {
+          vec2 i = floor(p);
+          vec2 f = fract(p);
+          // Smooth interpolation
+          f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+          float a = hash(i);
+          float b = hash(i + vec2(1.0, 0.0));
+          float c = hash(i + vec2(0.0, 1.0));
+          float d = hash(i + vec2(1.0, 1.0));
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
         }
 
         void main() {
@@ -4083,28 +4869,29 @@ export class RoverMode extends BaseMode {
     const wrapRange = 200;
     const halfRange = wrapRange / 2;
 
-    // Update each biome's flora
-    for (let biomeId = 0; biomeId < 10; biomeId++) {
+    // Update each biome's flora (15 biomes now)
+    for (let biomeId = 0; biomeId < 15; biomeId++) {
       const floraList = this.biomeFlora[biomeId];
       if (!floraList) continue;
 
       floraList.forEach(flora => {
-        // Calculate world position
+        // Calculate display position with wrapping
         const worldZ = flora.userData.worldZ - this.roverPosition.z;
         const wrappedZ = ((worldZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
 
-        // Calculate actual world Z for biome check
-        const actualWorldZ = flora.userData.worldZ;
+        // FIXED: The actual world Z at this display position
+        // The terrain at display position wrappedZ uses world Z = wrappedZ + roverPosition.z
+        const actualWorldZ = wrappedZ + this.roverPosition.z;
 
         // Check if this flora should be visible based on biome
         const biomeAtPosition = this.getBiomeAtPosition(flora.userData.worldX, actualWorldZ);
         const targetBiome = flora.userData.biome;
 
-        // Each biome spans 0.1 of the range (10 biomes total)
+        // Each biome spans ~0.0667 of the range (15 biomes total)
         // Flora is visible if current position's biome matches, with some tolerance for transitions
-        const biomeMatch = Math.abs(biomeAtPosition * 10 - targetBiome) < 1.5 ||
-                          Math.abs(biomeAtPosition * 10 - targetBiome - 10) < 1.5 ||
-                          Math.abs(biomeAtPosition * 10 - targetBiome + 10) < 1.5;
+        const biomeMatch = Math.abs(biomeAtPosition * 15 - targetBiome) < 1.5 ||
+                          Math.abs(biomeAtPosition * 15 - targetBiome - 15) < 1.5 ||
+                          Math.abs(biomeAtPosition * 15 - targetBiome + 15) < 1.5;
 
         flora.visible = biomeMatch;
 
@@ -4199,6 +4986,21 @@ export class RoverMode extends BaseMode {
         this.worm.visible = false;
       }
     }
+
+    // Energy pulse - ~0.5% per second
+    if (!this.energyPulseActive && Math.random() < 0.005 * delta) {
+      this.triggerEnergyPulse();
+    }
+
+    // Light pillar - ~0.5% per second
+    if (Math.random() < 0.005 * delta) {
+      this.spawnLightPillar();
+    }
+
+    // Solar flare - ~0.2% per second
+    if (Math.random() < 0.002 * delta) {
+      this.triggerSolarFlare();
+    }
   }
 
   updateStructures(elapsed) {
@@ -4218,7 +5020,9 @@ export class RoverMode extends BaseMode {
       const worldZ = structure.userData.worldZ - this.roverPosition.z;
       const wrappedZ = ((worldZ % 200) + 300) % 200 - 100;
       structure.position.z = wrappedZ;
-      const terrainY = this.getTerrainHeight(structure.userData.worldX, structure.userData.worldZ) + this.terrain.position.y;
+      // FIXED: Use the actual world Z at this display position
+      const actualWorldZ = wrappedZ + this.roverPosition.z;
+      const terrainY = this.getTerrainHeight(structure.userData.worldX, actualWorldZ) + this.terrain.position.y;
       structure.position.y = terrainY + (structure.geometry?.parameters?.height || 0) / 2;
     });
   }
@@ -4236,7 +5040,10 @@ export class RoverMode extends BaseMode {
       const worldZ = obj.userData.worldZ - this.roverPosition.z;
       const wrappedZ = ((worldZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
       obj.position.z = wrappedZ;
-      const terrainY = this.getTerrainHeight(obj.userData.worldX, obj.userData.worldZ) + this.terrain.position.y;
+      // FIXED: Use the actual world Z that corresponds to this display position
+      // The terrain at display position wrappedZ was generated with world Z = wrappedZ + roverPosition.z
+      const actualWorldZ = wrappedZ + this.roverPosition.z;
+      const terrainY = this.getTerrainHeight(obj.userData.worldX, actualWorldZ) + this.terrain.position.y;
       obj.position.y = terrainY + yOffset;
     };
 
@@ -4310,7 +5117,7 @@ export class RoverMode extends BaseMode {
     });
   }
 
-  spawnShootingStar() {
+  spawnShootingStar(isBright = false) {
     const star = this.shootingStarPool.find(s => !s.userData.active);
     if (!star) return;
 
@@ -4321,23 +5128,38 @@ export class RoverMode extends BaseMode {
 
     star.userData.startPos.set(spreadX, startY, startZ);
 
-    // Velocity: moving down and slightly toward camera for visibility
-    const vx = (Math.random() - 0.5) * 50;
-    const vy = -80 - Math.random() * 60; // Falling down
-    const vz = 20 + Math.random() * 40; // Moving toward camera
-    star.userData.velocity.set(vx, vy, vz);
+    // Bright meteors are slower, longer trails, more colorful
+    if (isBright) {
+      const vx = (Math.random() - 0.5) * 30;
+      const vy = -50 - Math.random() * 40; // Slower descent
+      const vz = 15 + Math.random() * 25;
+      star.userData.velocity.set(vx, vy, vz);
+      star.userData.maxLife = 3.5; // Longer lifetime
+      // Random warm/cool color for bright meteors
+      const hue = Math.random() * 0.15; // Orange to yellow-green range
+      star.material.color.setHSL(hue, 0.8, 0.8);
+    } else {
+      // Velocity: moving down and slightly toward camera for visibility
+      const vx = (Math.random() - 0.5) * 50;
+      const vy = -80 - Math.random() * 60; // Falling down
+      const vz = 20 + Math.random() * 40; // Moving toward camera
+      star.userData.velocity.set(vx, vy, vz);
+      star.userData.maxLife = 2.5;
+      star.material.color.setHex(0xffffaa); // Slightly golden color
+    }
 
     star.userData.active = true;
     star.userData.life = 0;
+    star.userData.isBright = isBright;
     star.material.opacity = 1;
-    star.material.color.setHex(0xffffaa); // Slightly golden color
   }
 
   updateShootingStars(delta) {
     this.shootingStarPool.forEach(star => {
       if (!star.userData.active) return;
       star.userData.life += delta;
-      if (star.userData.life > 2.5) {
+      const maxLife = star.userData.maxLife || 2.5;
+      if (star.userData.life > maxLife) {
         star.userData.active = false;
         star.material.opacity = 0;
         return;
@@ -4447,11 +5269,94 @@ export class RoverMode extends BaseMode {
       this.camera.rotation.x = this.cameraTilt;
       this.camera.rotation.z = Math.sin(elapsed * 0.3) * 0.01;
       this.camera.rotation.y = 0;
+    } else if (mode === 'scenic') {
+      // Scenic mode - high, slow panoramic sweeping
+      this.scenicTime += delta * 0.15;
+
+      // High, sweeping position
+      const scenicHeight = 35 + Math.sin(this.scenicTime * 0.3) * 12;
+      const targetY = terrainHeightAtRover + scenicHeight + this.terrain.position.y;
+      this.cameraY += (targetY - this.cameraY) * Math.min(1, delta * 1.2);
+
+      // Gentle circular sweep
+      this.camera.position.x = Math.sin(this.scenicTime * 0.4) * 30;
+      this.camera.position.y = this.cameraY;
+      this.camera.position.z = Math.cos(this.scenicTime * 0.25) * 15;
+
+      // Look at varying points (terrain, horizon, sky)
+      const lookY = this.cameraY - 20 + Math.sin(this.scenicTime * 0.2) * 25;
+      const lookZ = -50 + Math.cos(this.scenicTime * 0.15) * 25;
+      const lookTarget = new THREE.Vector3(
+        Math.sin(this.scenicTime * 0.3) * 35,
+        lookY,
+        lookZ
+      );
+      this.scenicLookTarget.lerp(lookTarget, delta * 0.4);
+      this.camera.lookAt(this.scenicLookTarget);
+
+      // Subtle roll for cinematic feel
+      this.camera.rotation.z += Math.sin(this.scenicTime * 0.35) * 0.015;
+    } else if (mode === 'lakeTour') {
+      // Simple slow glide over lake to showcase reflections
+      this.lakeTourTime += delta * 0.1; // Very slow progression
+
+      if (!this.lakes || this.lakes.length === 0) {
+        this.params.cameraMode = 'normal';
+        return;
+      }
+
+      const lake = this.lakes[this.lakeTourLakeIndex % this.lakes.length];
+      const lakeSize = lake.userData.size || 30;
+      const waterY = lake.position.y;
+
+      // Slow figure-8 pattern over the lake
+      const t = this.lakeTourTime;
+      const radius = lakeSize * 0.3;
+
+      // Target position: low over water, gentle movement
+      const targetX = lake.position.x + Math.sin(t * 0.5) * radius;
+      const targetZ = lake.position.z + Math.sin(t * 0.25) * radius * 0.5;
+      const targetY = waterY + 1.5 + Math.sin(t * 0.3) * 0.3; // Slight bobbing
+
+      // Very smooth interpolation
+      this.lakeTourCamPos.lerp(new THREE.Vector3(targetX, targetY, targetZ), delta * 0.5);
+
+      // Look down at water ahead
+      const lookX = lake.position.x + Math.sin(t * 0.5 + 0.5) * radius * 0.5;
+      const lookZ = lake.position.z + Math.sin(t * 0.25 + 0.3) * radius * 0.3;
+      this.lakeTourLookTarget.lerp(new THREE.Vector3(lookX, waterY - 0.5, lookZ), delta * 0.3);
+
+      this.camera.position.copy(this.lakeTourCamPos);
+      this.camera.lookAt(this.lakeTourLookTarget);
+
+      // Very subtle roll
+      this.camera.rotation.z = Math.sin(t * 0.2) * 0.01;
+
+      // Switch lakes every ~60 seconds
+      if (Math.floor(t / 6) > Math.floor((t - delta * 0.1) / 6)) {
+        this.lakeTourLakeIndex = (this.lakeTourLakeIndex + 1) % this.lakes.length;
+      }
+    }
+
+    // Camera collision avoidance
+    if (this.collisionAvoidanceEnabled) {
+      this.updateCollisionAvoidance(delta);
     }
 
     // Update all systems
     this.stars.material.uniforms.uTime.value = elapsed;
     this.planetRings.material.uniforms.uTime.value = elapsed;
+
+    // Gas giant orbital motion
+    this.gasPlanetOrbit.angle += delta * this.gasPlanetOrbit.speed;
+    const gAngle = this.gasPlanetOrbit.angle;
+    this.gasPlanet.position.set(
+      Math.cos(gAngle) * this.gasPlanetOrbit.radius + 300,
+      this.gasPlanetOrbit.centerY + Math.sin(gAngle * 0.5) * 40,
+      Math.sin(gAngle) * this.gasPlanetOrbit.radius * 0.4 - 500
+    );
+    this.planetRings.position.copy(this.gasPlanet.position);
+    this.planetRings.rotation.z += delta * 0.008;
 
     this.moons.forEach((moon) => {
       const d = moon.userData;
@@ -4466,7 +5371,8 @@ export class RoverMode extends BaseMode {
       if (audioData) n.material.uniforms.uAudioMid.value += (audioData.mid - n.material.uniforms.uAudioMid.value) * 0.1;
     });
 
-    if (Math.random() < 0.02) this.spawnShootingStar();
+    // Enhanced shooting stars - more frequent with occasional bright ones
+    if (Math.random() < 0.04) this.spawnShootingStar(Math.random() > 0.7);
     this.updateShootingStars(delta);
 
     const particlePositions = this.ambientParticles.geometry.attributes.position.array;
@@ -4495,6 +5401,13 @@ export class RoverMode extends BaseMode {
     this.updateAurora(delta, elapsed, audioData);
     this.updateLakes(delta, elapsed, audioData);
     this.updateClouds(delta, elapsed);
+
+    // Update enhanced visual features
+    this.updateEnergyPulse(delta);
+    this.updatePulsars(elapsed);
+    this.updateLightPillars(delta, elapsed);
+    this.updateSolarFlares(delta, elapsed);
+    this.updateFissures(elapsed);
   }
 
   onResize(width, height) {
@@ -4518,13 +5431,37 @@ export class RoverMode extends BaseMode {
   }
 
   setupGUI(folder) {
+    // World Seed controls
+    const seedFolder = folder.addFolder('World Seed');
+    seedFolder.add(this, 'seedInput').name('Seed').listen();
+    seedFolder.add({
+      applySeed: () => {
+        const newSeed = parseInt(this.seedInput) || Date.now() % 1000000;
+        this.regenerateWorld(newSeed);
+      }
+    }, 'applySeed').name('Apply Seed');
+    seedFolder.add({
+      randomize: () => {
+        const newSeed = Date.now() % 1000000;
+        this.seedInput = newSeed.toString();
+        this.regenerateWorld(newSeed);
+      }
+    }, 'randomize').name('Randomize');
+    seedFolder.add({
+      copySeed: () => {
+        navigator.clipboard.writeText(this.currentSeed.toString()).then(() => {
+          console.log('Seed copied to clipboard:', this.currentSeed);
+        });
+      }
+    }, 'copySeed').name('Copy Seed');
+
     folder.add(this.params, 'speed', 0.2, 3.0).name('Rover Speed');
     folder.add(this.params, 'fov', 60, 120).name('Field of View').onChange(v => {
       this.camera.fov = v;
       this.camera.updateProjectionMatrix();
     });
     folder.add(this.params, 'cameraHeight', 0.5, 10.0).name('Camera Height');
-    folder.add(this.params, 'cameraMode', ['normal', 'cinematic', 'orbit', 'low']).name('Camera Mode');
+    folder.add(this.params, 'cameraMode', ['normal', 'cinematic', 'orbit', 'low', 'scenic', 'lakeTour']).name('Camera Mode');
     folder.add(this.params, 'terrainHeight', 2, 30).name('Terrain Height');
     folder.add(this.params, 'terrainScale', 0.00005, 0.002).name('Terrain Scale');
     folder.add(this.params, 'floraEnabled').name('Flora');
@@ -4592,7 +5529,10 @@ export class RoverMode extends BaseMode {
       ufo: () => this.triggerUFO(),
       supernova: () => this.triggerSupernova(),
       eclipse: () => this.triggerEclipse(),
-      giantWorm: () => this.triggerGiantWorm()
+      giantWorm: () => this.triggerGiantWorm(),
+      energyPulse: () => this.triggerEnergyPulse(),
+      lightPillar: () => this.spawnLightPillar(),
+      solarFlare: () => this.triggerSolarFlare()
     };
     eventsFolder.add(this.triggerEvents, 'meteorShower').name('Meteor Shower');
     eventsFolder.add(this.triggerEvents, 'comet').name('Comet');
@@ -4600,6 +5540,9 @@ export class RoverMode extends BaseMode {
     eventsFolder.add(this.triggerEvents, 'supernova').name('Supernova Flash');
     eventsFolder.add(this.triggerEvents, 'eclipse').name('Eclipse');
     eventsFolder.add(this.triggerEvents, 'giantWorm').name('Giant Worm');
+    eventsFolder.add(this.triggerEvents, 'energyPulse').name('Energy Pulse');
+    eventsFolder.add(this.triggerEvents, 'lightPillar').name('Light Pillar');
+    eventsFolder.add(this.triggerEvents, 'solarFlare').name('Solar Flare');
   }
 
   // Manual weather setter
@@ -4779,5 +5722,481 @@ export class RoverMode extends BaseMode {
     this.wormState.x = (Math.random() - 0.5) * 60;
     this.wormState.z = -30 - Math.random() * 30;
     this.worm.visible = true;
+  }
+
+  // Energy pulse that ripples across terrain
+  triggerEnergyPulse() {
+    this.energyPulseActive = true;
+    this.energyPulseTime = 0;
+    // Random origin point near the rover
+    this.terrain.material.uniforms.uEnergyPulseOrigin.value.set(
+      (Math.random() - 0.5) * 80,
+      (Math.random() - 0.5) * 80
+    );
+    this.terrain.material.uniforms.uEnergyPulseActive.value = 1.0;
+  }
+
+  updateEnergyPulse(delta) {
+    if (this.energyPulseActive) {
+      this.energyPulseTime += delta * 0.4; // Speed of pulse expansion
+      this.terrain.material.uniforms.uEnergyPulseTime.value = this.energyPulseTime;
+
+      if (this.energyPulseTime >= 1.0) {
+        this.energyPulseActive = false;
+        this.terrain.material.uniforms.uEnergyPulseActive.value = 0;
+      }
+    }
+  }
+
+  // Create pulsars - flashing distant stars
+  createPulsars() {
+    this.pulsars = [];
+    const pulsarCount = 5;
+
+    for (let i = 0; i < pulsarCount; i++) {
+      const pulsar = new THREE.Mesh(
+        new THREE.SphereGeometry(2, 8, 8),
+        new THREE.ShaderMaterial({
+          uniforms: {
+            uTime: { value: 0 },
+            uPhase: { value: Math.random() * Math.PI * 2 },
+            uFrequency: { value: 3 + Math.random() * 7 },
+            uColor: { value: new THREE.Color().setHSL(Math.random(), 0.6, 0.8) }
+          },
+          vertexShader: `
+            void main() {
+              gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+            }
+          `,
+          fragmentShader: `
+            uniform float uTime;
+            uniform float uPhase;
+            uniform float uFrequency;
+            uniform vec3 uColor;
+            void main() {
+              float pulse = step(0.75, sin(uTime * uFrequency + uPhase));
+              vec3 color = uColor * pulse * 2.5;
+              gl_FragColor = vec4(color, pulse * 0.9);
+            }
+          `,
+          transparent: true,
+          blending: THREE.AdditiveBlending,
+          depthWrite: false
+        })
+      );
+
+      // Position far away in sky
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.random() * Math.PI * 0.35;
+      pulsar.position.set(
+        Math.sin(phi) * Math.cos(theta) * 700,
+        Math.cos(phi) * 500 + 150,
+        Math.sin(phi) * Math.sin(theta) * 700 - 200
+      );
+
+      this.scene.add(pulsar);
+      this.pulsars.push(pulsar);
+    }
+  }
+
+  updatePulsars(elapsed) {
+    this.pulsars?.forEach(pulsar => {
+      pulsar.material.uniforms.uTime.value = elapsed;
+    });
+  }
+
+  // Create light pillars that shoot up from terrain
+  createLightPillars() {
+    this.lightPillars = [];
+    const pillarMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: 1.0 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        void main() {
+          float gradient = 1.0 - vUv.y;
+          gradient = pow(gradient, 0.5);
+          float horizontal = 1.0 - abs(vUv.x - 0.5) * 2.0;
+          horizontal = pow(horizontal, 2.0);
+          float shimmer = sin(uTime * 5.0 + vUv.y * 20.0) * 0.15 + 0.85;
+          vec3 color = vec3(0.4, 0.8, 1.0) * gradient * horizontal * shimmer * uIntensity;
+          float alpha = gradient * horizontal * 0.7 * uIntensity;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+
+    // Create pool of light pillars
+    for (let i = 0; i < 5; i++) {
+      const pillar = new THREE.Mesh(
+        new THREE.PlaneGeometry(4, 80),
+        pillarMat.clone()
+      );
+      pillar.visible = false;
+      pillar.userData = { active: false, age: 0, lifetime: 0 };
+      this.scene.add(pillar);
+      this.lightPillars.push(pillar);
+    }
+  }
+
+  spawnLightPillar() {
+    const pillar = this.lightPillars?.find(p => !p.userData.active);
+    if (pillar) {
+      pillar.position.set(
+        (Math.random() - 0.5) * 120,
+        40,
+        (Math.random() - 0.5) * 120 - 30
+      );
+      pillar.visible = true;
+      pillar.userData.active = true;
+      pillar.userData.age = 0;
+      pillar.userData.lifetime = 3 + Math.random() * 2;
+      pillar.material.uniforms.uIntensity.value = 1.0;
+      // Face the camera
+      pillar.lookAt(this.camera.position);
+    }
+  }
+
+  updateLightPillars(delta, elapsed) {
+    this.lightPillars?.forEach(pillar => {
+      if (!pillar.userData.active) return;
+
+      pillar.userData.age += delta;
+      pillar.material.uniforms.uTime.value = elapsed;
+
+      // Fade out near end of lifetime
+      const fadeStart = pillar.userData.lifetime * 0.7;
+      if (pillar.userData.age > fadeStart) {
+        const fadeProgress = (pillar.userData.age - fadeStart) / (pillar.userData.lifetime - fadeStart);
+        pillar.material.uniforms.uIntensity.value = 1.0 - fadeProgress;
+      }
+
+      if (pillar.userData.age > pillar.userData.lifetime) {
+        pillar.userData.active = false;
+        pillar.visible = false;
+      }
+    });
+  }
+
+  // Create solar flares from gas giant
+  createSolarFlares() {
+    this.solarFlares = [];
+    const flareMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uIntensity: { value: 0 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uIntensity;
+        varying vec2 vUv;
+        void main() {
+          float taper = 1.0 - vUv.y;
+          float horizontal = 1.0 - abs(vUv.x - 0.5) * 2.0;
+          horizontal = pow(horizontal, 0.5 + vUv.y);
+          float flicker = sin(uTime * 20.0 + vUv.y * 10.0) * 0.2 + 0.8;
+          vec3 color = mix(vec3(1.0, 0.9, 0.4), vec3(1.0, 0.3, 0.1), vUv.y);
+          color *= taper * horizontal * flicker * uIntensity;
+          float alpha = taper * horizontal * uIntensity * 0.8;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+
+    for (let i = 0; i < 3; i++) {
+      const flare = new THREE.Mesh(
+        new THREE.PlaneGeometry(60, 180),
+        flareMat.clone()
+      );
+      flare.visible = false;
+      flare.userData = { active: false, age: 0, duration: 0 };
+      this.scene.add(flare);
+      this.solarFlares.push(flare);
+    }
+  }
+
+  triggerSolarFlare() {
+    const flare = this.solarFlares?.find(f => !f.userData.active);
+    if (flare && this.gasPlanet) {
+      const angle = Math.random() * Math.PI * 2;
+      flare.position.copy(this.gasPlanet.position);
+      flare.position.x += Math.cos(angle) * 100;
+      flare.position.y += Math.sin(angle) * 100 + 50;
+      flare.lookAt(this.camera.position);
+      flare.visible = true;
+      flare.userData.active = true;
+      flare.userData.age = 0;
+      flare.userData.duration = 2 + Math.random() * 3;
+      flare.material.uniforms.uIntensity.value = 1.0;
+    }
+  }
+
+  updateSolarFlares(delta, elapsed) {
+    this.solarFlares?.forEach(flare => {
+      if (!flare.userData.active) return;
+
+      flare.userData.age += delta;
+      flare.material.uniforms.uTime.value = elapsed;
+
+      // Fade in and out
+      const halfDuration = flare.userData.duration / 2;
+      if (flare.userData.age < halfDuration * 0.3) {
+        flare.material.uniforms.uIntensity.value = flare.userData.age / (halfDuration * 0.3);
+      } else if (flare.userData.age > halfDuration) {
+        const fadeProgress = (flare.userData.age - halfDuration) / halfDuration;
+        flare.material.uniforms.uIntensity.value = 1.0 - fadeProgress;
+      }
+
+      // Follow gas giant
+      if (this.gasPlanet) {
+        const offset = flare.position.clone().sub(this.gasPlanet.position);
+        flare.position.copy(this.gasPlanet.position).add(offset);
+      }
+
+      if (flare.userData.age > flare.userData.duration) {
+        flare.userData.active = false;
+        flare.visible = false;
+      }
+    });
+  }
+
+  // Glowing fissures in the terrain
+  createGlowingFissures() {
+    this.fissures = [];
+    const fissureMat = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uPulsePhase: { value: 0 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uTime;
+        uniform float uPulsePhase;
+        varying vec2 vUv;
+        void main() {
+          float edge = smoothstep(0.3, 0.5, abs(vUv.x - 0.5));
+          float pulse = sin(uTime * 2.0 + uPulsePhase + vUv.y * 5.0) * 0.3 + 0.7;
+          vec3 coreColor = vec3(1.0, 0.4, 0.1);
+          vec3 edgeColor = vec3(1.0, 0.7, 0.3);
+          vec3 color = mix(coreColor, edgeColor, edge) * pulse;
+          float alpha = (1.0 - edge) * 0.85;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+
+    for (let i = 0; i < 12; i++) {
+      const length = 15 + Math.random() * 25;
+      const fissure = new THREE.Mesh(
+        new THREE.PlaneGeometry(2, length),
+        fissureMat.clone()
+      );
+      fissure.rotation.x = -Math.PI / 2;
+      fissure.rotation.z = Math.random() * Math.PI;
+      fissure.position.set(
+        (Math.random() - 0.5) * 180,
+        0.1,
+        (Math.random() - 0.5) * 180
+      );
+      fissure.material.uniforms.uPulsePhase.value = Math.random() * Math.PI * 2;
+      fissure.userData = { worldX: fissure.position.x, worldZ: fissure.position.z };
+      this.scene.add(fissure);
+      this.fissures.push(fissure);
+    }
+  }
+
+  updateFissures(elapsed) {
+    const wrapRange = 200;
+    const halfRange = wrapRange / 2;
+
+    this.fissures?.forEach(fissure => {
+      fissure.material.uniforms.uTime.value = elapsed;
+
+      // Wrap fissure position like other objects
+      const worldZ = fissure.userData.worldZ - this.roverPosition.z;
+      const wrappedZ = ((worldZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
+      fissure.position.z = wrappedZ;
+
+      // Use the actual world Z at this display position
+      const actualWorldZ = wrappedZ + this.roverPosition.z;
+      const terrainY = this.getTerrainHeight(fissure.userData.worldX, actualWorldZ);
+      fissure.position.y = terrainY + this.terrain.position.y + 0.15;
+    });
+  }
+
+  // Camera collision avoidance - detect nearby objects and adjust camera height smoothly
+  updateCollisionAvoidance(delta) {
+    const cameraPos = this.camera.position;
+    const detectionRadius = 25; // Detect objects from further away for smooth anticipation
+    const avoidanceStrength = 12; // How high to lift camera
+    let maxAvoidance = 0;
+
+    // Smooth ease-in-out curve for natural motion
+    const smoothstep = (x) => x * x * (3 - 2 * x);
+
+    // Helper to check distance to an object
+    const checkObject = (obj) => {
+      if (!obj || !obj.visible) return;
+
+      const dx = obj.position.x - cameraPos.x;
+      const dz = obj.position.z - cameraPos.z;
+      const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+
+      // Only check objects in front of or near the camera
+      if (dz > 8) return; // Object is behind camera
+
+      if (horizontalDist < detectionRadius) {
+        // Use smoothstep for gradual avoidance that feels natural
+        const normalizedDist = horizontalDist / detectionRadius;
+        const avoidFactor = smoothstep(1 - normalizedDist);
+
+        const objectHeight = (obj.scale?.y || 1) * 2;
+        const neededHeight = obj.position.y + objectHeight - cameraPos.y;
+
+        if (neededHeight > 0) {
+          // Scale avoidance by both distance factor and height needed
+          const avoidAmount = avoidFactor * Math.min(neededHeight + 1.5, avoidanceStrength);
+          maxAvoidance = Math.max(maxAvoidance, avoidAmount);
+        }
+      }
+    };
+
+    // Check rock pillars (tall objects most likely to block camera)
+    this.rockPillars?.forEach(checkObject);
+
+    // Check larger boulders
+    this.boulders?.forEach(obj => {
+      if (obj.scale && obj.scale.y > 1.5) checkObject(obj);
+    });
+
+    // Check structures (ruins, monoliths, ships)
+    this.structures?.forEach(checkObject);
+    this.monoliths?.forEach(checkObject);
+
+    // Check flora clusters (only larger ones) - 15 biomes now
+    for (let biomeId = 0; biomeId < 15; biomeId++) {
+      this.biomeFlora[biomeId]?.forEach(flora => {
+        if (flora.visible) checkObject(flora);
+      });
+    }
+
+    // Very smooth interpolation for natural camera motion
+    const targetAvoidance = maxAvoidance;
+
+    // Slower rise for anticipation (feels like camera is gracefully gliding up)
+    const riseSpeed = 1.5; // Gentler rise
+    const fallSpeed = 0.8; // Even gentler fall for smooth descent
+
+    if (targetAvoidance > this.collisionAvoidanceHeight) {
+      // Rising to avoid obstacle
+      this.collisionAvoidanceHeight += (targetAvoidance - this.collisionAvoidanceHeight) * Math.min(1, delta * riseSpeed);
+    } else {
+      // Descending after passing obstacle
+      this.collisionAvoidanceHeight += (targetAvoidance - this.collisionAvoidanceHeight) * Math.min(1, delta * fallSpeed);
+    }
+
+    // Apply the avoidance height to camera
+    this.camera.position.y += this.collisionAvoidanceHeight;
+
+    // Gentle camera tilt when avoiding (look over the obstacle smoothly)
+    if (this.collisionAvoidanceHeight > 0.3) {
+      this.camera.rotation.x -= this.collisionAvoidanceHeight * 0.015;
+    }
+  }
+
+  // Regenerate the world with a new seed
+  regenerateWorld(seed) {
+    this.currentSeed = seed;
+    this.seedInput = seed.toString();
+    this.noise = new SimplexNoise(seed);
+
+    // Reset rover position
+    this.roverPosition.set(0, 0, 0);
+    this.time = 0;
+
+    // Regenerate terrain geometry
+    if (this.terrain && this.terrain.geometry) {
+      const geometry = this.terrain.geometry;
+      const positions = geometry.attributes.position.array;
+      const segmentsX = Math.sqrt(positions.length / 3) - 1;
+
+      for (let i = 0; i < positions.length / 3; i++) {
+        const x = positions[i * 3];
+        const z = positions[i * 3 + 2];
+        positions[i * 3 + 1] = this.getTerrainHeight(x, z);
+      }
+
+      geometry.attributes.position.needsUpdate = true;
+      geometry.computeVertexNormals();
+    }
+
+    // Relocate lakes to new random positions
+    this.lakes?.forEach((lake, i) => {
+      const newX = (Math.random() - 0.5) * 250;
+      const newZ = (Math.random() - 0.5) * 250;
+      lake.position.x = newX;
+      lake.position.z = newZ;
+      lake.userData.worldX = newX;
+      lake.userData.worldZ = newZ;
+    });
+
+    // Relocate local features (boulders, pillars, etc.)
+    this.boulders?.forEach(rock => {
+      rock.userData.worldX = (Math.random() - 0.5) * 300;
+      rock.userData.worldZ = (Math.random() - 0.5) * 300;
+    });
+
+    this.rockPillars?.forEach(pillar => {
+      pillar.userData.worldX = (Math.random() - 0.5) * 300;
+      pillar.userData.worldZ = (Math.random() - 0.5) * 300;
+    });
+
+    this.structures?.forEach(s => {
+      s.userData.worldX = (Math.random() - 0.5) * 300;
+      s.userData.worldZ = (Math.random() - 0.5) * 300;
+    });
+
+    // Reset biome colors based on new seed
+    if (this.terrain?.material?.uniforms?.uBiomeSeed) {
+      this.terrain.material.uniforms.uBiomeSeed.value = seed * 0.001;
+    }
+
+    console.log('World regenerated with seed:', seed);
   }
 }
