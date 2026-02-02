@@ -1480,10 +1480,10 @@ export class FloraSystem {
     }
 
     // Update biome flora
-    this.updateBiomeFlora(delta, elapsed);
+    this.updateBiomeFlora(delta, elapsed, sunBrightness);
   }
 
-  updateBiomeFlora(delta, elapsed) {
+  updateBiomeFlora(delta, elapsed, sunBrightness) {
     const wrapRange = 200;
     const halfRange = wrapRange / 2;
     const biomeCount = this.terrainSystem.config.biomeCount;
@@ -1515,10 +1515,29 @@ export class FloraSystem {
           flora.rotation.x = Math.sin(elapsed * 0.5 + flora.position.x * 0.1) * 0.03;
           flora.rotation.z = Math.cos(elapsed * 0.3 + flora.position.z * 0.1) * 0.03;
 
-          // Update shader uniforms
+          // Update shader uniforms and apply night darkening
+          const ambientLevel = 0.15 + sunBrightness * 0.85;
+          const nightTint = { r: 0.7, g: 0.75, b: 0.9 };
+
           flora.traverse(child => {
             if (child.material?.uniforms?.uTime) {
               child.material.uniforms.uTime.value = elapsed + this.floraAudioBass;
+            }
+
+            // Apply night darkening to MeshBasicMaterial objects
+            if (child.material && child.material.isMeshBasicMaterial) {
+              // Store base color if not already stored
+              if (!child.userData.baseColor && child.material.color) {
+                child.userData.baseColor = child.material.color.clone();
+              }
+              // Apply night darkening
+              if (child.userData.baseColor) {
+                const base = child.userData.baseColor;
+                const tintedR = base.r * (nightTint.r + (1 - nightTint.r) * sunBrightness) * ambientLevel;
+                const tintedG = base.g * (nightTint.g + (1 - nightTint.g) * sunBrightness) * ambientLevel;
+                const tintedB = base.b * (nightTint.b + (1 - nightTint.b) * sunBrightness) * ambientLevel;
+                child.material.color.setRGB(tintedR, tintedG, tintedB);
+              }
             }
           });
         }

@@ -519,6 +519,7 @@ export class GrassSystem {
     for (let i = 0; i < density; i++) {
       const rock = new THREE.Mesh(rockGeom, rockMat.clone());
       rock.material.color.setHSL(0.08, 0.1, 0.3 + Math.random() * 0.2);
+      rock.userData.baseColor = rock.material.color.clone();
       rock.position.set(
         (Math.random() - 0.5) * width,
         0.05,
@@ -541,6 +542,7 @@ export class GrassSystem {
     for (let i = 0; i < density * 0.5; i++) {
       const stick = new THREE.Mesh(stickGeom, stickMat.clone());
       stick.material.color.setHSL(0.08, 0.4, 0.15 + Math.random() * 0.1);
+      stick.userData.baseColor = stick.material.color.clone();
       stick.position.set(
         (Math.random() - 0.5) * width,
         0.02,
@@ -564,6 +566,7 @@ export class GrassSystem {
         transparent: true,
         opacity: 0.7
       }));
+      pile.userData.baseColor = pile.material.color.clone();
       pile.position.set(
         (Math.random() - 0.5) * width,
         0.01,
@@ -599,8 +602,9 @@ export class GrassSystem {
     for (let i = 0; i < frondCount; i++) {
       const frond = new THREE.Mesh(
         new THREE.PlaneGeometry(0.15, 0.4),
-        new THREE.MeshBasicMaterial({ color, side: THREE.DoubleSide })
+        new THREE.MeshBasicMaterial({ color: color.clone(), side: THREE.DoubleSide })
       );
+      frond.userData.baseColor = frond.material.color.clone();
       frond.position.y = 0.15;
       const angle = (i / frondCount) * Math.PI * 2;
       frond.rotation.set(-0.6, angle, 0);
@@ -701,12 +705,38 @@ export class GrassSystem {
       }
     }
 
+    // Night tint color (blue-ish)
+    const nightTint = new THREE.Color(0.7, 0.75, 0.9);
+    const ambientLevel = 0.15 + sunBrightness * 0.85;
+
     for (const item of this.clutter) {
       const relZ = item.userData.worldZ - roverZ;
       item.position.z = ((relZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
       const actualWorldZ = item.position.z + roverZ;
       item.position.y = this.terrainSystem.getHeight(item.userData.worldX, actualWorldZ) +
                         this.terrainSystem.terrain.position.y + 0.02;
+
+      // Apply night darkening to clutter
+      if (item.material && item.userData.baseColor) {
+        const base = item.userData.baseColor;
+        const tintedR = base.r * (nightTint.r + (1 - nightTint.r) * sunBrightness) * ambientLevel;
+        const tintedG = base.g * (nightTint.g + (1 - nightTint.g) * sunBrightness) * ambientLevel;
+        const tintedB = base.b * (nightTint.b + (1 - nightTint.b) * sunBrightness) * ambientLevel;
+        item.material.color.setRGB(tintedR, tintedG, tintedB);
+      }
+
+      // Handle groups (like ferns) with child meshes
+      if (item.children) {
+        item.traverse(child => {
+          if (child.material && child.userData.baseColor) {
+            const base = child.userData.baseColor;
+            const tintedR = base.r * (nightTint.r + (1 - nightTint.r) * sunBrightness) * ambientLevel;
+            const tintedG = base.g * (nightTint.g + (1 - nightTint.g) * sunBrightness) * ambientLevel;
+            const tintedB = base.b * (nightTint.b + (1 - nightTint.b) * sunBrightness) * ambientLevel;
+            child.material.color.setRGB(tintedR, tintedG, tintedB);
+          }
+        });
+      }
     }
   }
 
