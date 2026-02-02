@@ -1227,13 +1227,17 @@ export class RoverMode extends BaseMode {
         uRoverZ: { value: 0 },
         uEnergyPulseTime: { value: 0 },
         uEnergyPulseOrigin: { value: new THREE.Vector2(0, 0) },
-        uEnergyPulseActive: { value: 0 }
+        uEnergyPulseActive: { value: 0 },
+        // Fog uniforms - Three.js populates these from scene.fog
+        fogColor: { value: new THREE.Color(0x0a0a15) },
+        fogDensity: { value: 0.006 }
       },
       vertexShader: `
         varying vec3 vPosition;
         varying vec3 vWorldPos;
         varying float vElevation;
         varying vec3 vNormal;
+        varying float vFogDepth;
         uniform float uRoverZ;
         void main() {
           vPosition = position;
@@ -1241,7 +1245,9 @@ export class RoverMode extends BaseMode {
           vWorldPos.z -= uRoverZ; // World space for biome calculation
           vElevation = position.y;
           vNormal = normal;
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vFogDepth = -mvPosition.z;
+          gl_Position = projectionMatrix * mvPosition;
         }
       `,
       fragmentShader: `
@@ -1256,6 +1262,18 @@ export class RoverMode extends BaseMode {
         varying vec3 vWorldPos;
         varying float vElevation;
         varying vec3 vNormal;
+        varying float vFogDepth;
+
+        // Fog uniforms (injected by Three.js when fog: true)
+        #ifdef USE_FOG
+          uniform vec3 fogColor;
+          #ifdef FOG_EXP2
+            uniform float fogDensity;
+          #else
+            uniform float fogNear;
+            uniform float fogFar;
+          #endif
+        #endif
 
         // Simple noise for biome blending
         float hash(vec2 p) {
@@ -1482,9 +1500,20 @@ export class RoverMode extends BaseMode {
           color = clamp(color, vec3(0.05), vec3(0.85));
 
           gl_FragColor = vec4(color, 1.0);
+
+          // Apply fog
+          #ifdef USE_FOG
+            #ifdef FOG_EXP2
+              float fogFactor = 1.0 - exp(-fogDensity * fogDensity * vFogDepth * vFogDepth);
+            #else
+              float fogFactor = smoothstep(fogNear, fogFar, vFogDepth);
+            #endif
+            gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, fogFactor);
+          #endif
         }
       `,
-      side: THREE.DoubleSide
+      side: THREE.DoubleSide,
+      fog: true
     });
 
     this.terrain = new THREE.Mesh(geometry, material);
@@ -5461,7 +5490,19 @@ export class RoverMode extends BaseMode {
       this.camera.updateProjectionMatrix();
     });
     folder.add(this.params, 'cameraHeight', 0.5, 10.0).name('Camera Height');
-    folder.add(this.params, 'cameraMode', ['normal', 'cinematic', 'orbit', 'low', 'scenic', 'lakeTour']).name('Camera Mode');
+    folder.add(this.params, 'cameraMode', ['normal', 'cinematic', 'orbit', 'low', 'scenic', 'lakeTour']).name('Camera Mode').onChange(v => {
+      if (v === 'lakeTour') {
+        // Initialize lake tour camera state from current position
+        this.lakeTourCamPos.copy(this.camera.position);
+        this.lakeTourLookTarget.set(
+          this.camera.position.x,
+          this.camera.position.y - 1,
+          this.camera.position.z - 5
+        );
+        this.lakeTourTime = 0;
+        this.lakeTourLakeIndex = 0;
+      }
+    });
     folder.add(this.params, 'terrainHeight', 2, 30).name('Terrain Height');
     folder.add(this.params, 'terrainScale', 0.00005, 0.002).name('Terrain Scale');
     folder.add(this.params, 'floraEnabled').name('Flora');

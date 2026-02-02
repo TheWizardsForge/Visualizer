@@ -12,6 +12,7 @@ import { SacredGeometryMode } from './modes/SacredGeometryMode.js';
 import { VoronoiMode } from './modes/VoronoiMode.js';
 import { TerrainMode } from './modes/TerrainMode.js';
 import { RoverMode } from './modes/RoverMode.js';
+import { PlanarMode } from './modes/PlanarMode.js';
 
 const MODE_LIST = [
   { name: 'Fractal', Class: FractalMode },
@@ -24,14 +25,15 @@ const MODE_LIST = [
   { name: 'Voronoi Cells', Class: VoronoiMode },
   { name: 'Terrain Flyover', Class: TerrainMode },
   { name: 'Planet Rover', Class: RoverMode },
+  { name: 'Planar Realms', Class: PlanarMode },
   { name: 'Particles', Class: ParticleMode },
 ];
 
 class Visualizer {
   constructor() {
     this.modes = [];
-    this.activeModeIndex = 9; // Planet Rover as default
-    this.currentModeIndex = 9; // For GUI binding
+    this.activeModeIndex = 10; // Planar Realms as default
+    this.currentModeIndex = 10; // For GUI binding
     this.nextModeIndex = null;
     this.audioEnabled = false;
     this.audioSensitivity = 2.5;
