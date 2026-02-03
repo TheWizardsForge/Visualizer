@@ -102,6 +102,7 @@ export class PlanarMode extends BaseMode {
       grassShadows: realmConfig.grassShadows ?? 0.0
     });
     this.terrainSystem.create();
+    this.terrainSystem.initHeightSampler(this.renderer);
 
     // Initialize Flora System
     this.floraSystem = new FloraSystem(this.scene, this.terrainSystem, {

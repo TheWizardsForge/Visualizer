@@ -1138,9 +1138,10 @@ export class FaunaSystem {
       }
 
       // Position on terrain
+      // GPU terrain samples at (-screenZ - roverZ), so negate the screen Z
       creature.position.x = d.worldX;
       creature.position.z = d.worldZ;
-      const height = this.terrainSystem.getHeight(d.worldX, d.worldZ + this.roverZ);
+      const height = this.terrainSystem.getHeight(d.worldX, -d.worldZ - this.roverZ);
       creature.position.y = height + this.terrainY + 0.3;
 
       // Type-specific updates

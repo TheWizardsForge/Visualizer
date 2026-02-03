@@ -3,6 +3,7 @@
  */
 
 export { SimplexNoise } from './SimplexNoise.js';
+export { GPUHeightSampler } from './GPUHeightSampler.js';
 export { TerrainSystem } from './TerrainSystem.js';
 export { SkySystem } from './SkySystem.js';
 export { AtmosphereSystem } from './AtmosphereSystem.js';

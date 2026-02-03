@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { NOISE_FUNCTIONS, TERRAIN_HEIGHT_FUNCTION } from '../shaders/terrainNoise.glsl.js';
 
 /**
  * GrassSystem - Instanced grass rendering with wind animation
@@ -33,7 +34,6 @@ export class GrassSystem {
     this.grassMaterial = null;
     this.grassShadows = null;
     this.grassShadowMaterial = null;
-    this.baseOffsets = null;
     this.shadows = [];
     this.clutter = [];
     this.roverZ = 0;
@@ -239,25 +239,26 @@ export class GrassSystem {
       colors[i * 3 + 2] = Math.max(0, baseColor.b + variation * 0.5);
     }
 
-    // Store base Z positions for wrapping calculations
-    this.baseOffsets = new Float32Array(instanceCount * 2);
-    for (let i = 0; i < instanceCount; i++) {
-      this.baseOffsets[i * 2] = offsets[i * 3];     // x
-      this.baseOffsets[i * 2 + 1] = offsets[i * 3 + 2]; // z
-    }
-
     instancedGeometry.setAttribute('offset', new THREE.InstancedBufferAttribute(offsets, 3));
     instancedGeometry.setAttribute('scale', new THREE.InstancedBufferAttribute(scales, 1));
     instancedGeometry.setAttribute('rotation', new THREE.InstancedBufferAttribute(rotations, 1));
     instancedGeometry.setAttribute('color', new THREE.InstancedBufferAttribute(colors, 3));
 
-    // Grass shader material - simplified, heights calculated on CPU
+    // Grass shader material - GPU-based wrapping and terrain height
+    // Get terrain parameters from terrain system to ensure alignment
+    const terrainHeight = this.terrainSystem?.config?.terrainHeight ?? 35.0;
+    const terrainScale = this.terrainSystem?.config?.terrainScale ?? 0.0005;
+
     this.grassMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
         uWindStrength: { value: this.config.windStrength },
         uBladeHeight: { value: bladeHeight },
-        uAmbientLight: { value: 1.0 }
+        uAmbientLight: { value: 1.0 },
+        uRoverZ: { value: 0 },
+        uWrapRange: { value: this.config.width },
+        uTerrainHeight: { value: terrainHeight },
+        uTerrainScale: { value: terrainScale }
       },
       vertexShader: `
         attribute vec3 offset;
@@ -268,12 +269,31 @@ export class GrassSystem {
         uniform float uTime;
         uniform float uWindStrength;
         uniform float uBladeHeight;
+        uniform float uRoverZ;
+        uniform float uWrapRange;
+        uniform float uTerrainHeight;
+        uniform float uTerrainScale;
 
         varying vec3 vColor;
         varying float vY;
 
+        ${NOISE_FUNCTIONS}
+        ${TERRAIN_HEIGHT_FUNCTION}
+
         void main() {
           vColor = color;
+
+          // GPU-side Z wrapping
+          float baseZ = offset.z;
+          float relZ = baseZ - uRoverZ;
+          float halfRange = uWrapRange * 0.5;
+          float wrappedZ = mod(relZ + halfRange, uWrapRange) - halfRange;
+
+          // Calculate world position for terrain height
+          // Screen Z is inverted (camera looks at -Z), so negate wrappedZ
+          // This matches terrain's formula: worldPos.z = -position.z - uRoverZ
+          vec2 worldPos = vec2(offset.x, -wrappedZ - uRoverZ);
+          float terrainY = getTerrainHeight(worldPos);
 
           // Get normalized height along blade
           float heightFrac = position.y / uBladeHeight;
@@ -293,15 +313,15 @@ export class GrassSystem {
           );
 
           // Wind animation - bend based on height
-          float windPhase = offset.x * 0.05 + offset.z * 0.05 + uTime * 2.0;
+          float windPhase = offset.x * 0.05 + wrappedZ * 0.05 + uTime * 2.0;
           float windBend = sin(windPhase) * uWindStrength * heightFrac * heightFrac;
           rotatedPos.x += windBend;
           rotatedPos.z += windBend * 0.5;
 
-          // Apply offset (includes terrain height in Y)
-          vec3 worldPos = rotatedPos + offset;
+          // Apply offset with GPU-computed position
+          vec3 finalPos = rotatedPos + vec3(offset.x, terrainY, wrappedZ);
 
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(finalPos, 1.0);
         }
       `,
       fragmentShader: `
@@ -375,24 +395,51 @@ export class GrassSystem {
     instancedShadowGeom.setAttribute('offset', new THREE.InstancedBufferAttribute(shadowOffsets, 3));
     instancedShadowGeom.setAttribute('scale', new THREE.InstancedBufferAttribute(shadowScales, 1));
 
-    // Simple shadow shader with sun brightness
+    // GPU-based shadow shader with wrapping and terrain height
+    // Get terrain parameters from terrain system to ensure alignment
+    const terrainHeight = this.terrainSystem?.config?.terrainHeight ?? 35.0;
+    const terrainScale = this.terrainSystem?.config?.terrainScale ?? 0.0005;
+
     this.grassShadowMaterial = new THREE.ShaderMaterial({
       uniforms: {
-        uSunBrightness: { value: 1.0 }
+        uSunBrightness: { value: 1.0 },
+        uRoverZ: { value: 0 },
+        uWrapRange: { value: this.config.width },
+        uTerrainHeight: { value: terrainHeight },
+        uTerrainScale: { value: terrainScale }
       },
       vertexShader: `
         attribute vec3 offset;
         attribute float scale;
 
+        uniform float uRoverZ;
+        uniform float uWrapRange;
+        uniform float uTerrainHeight;
+        uniform float uTerrainScale;
+
         varying vec2 vUv;
+
+        ${NOISE_FUNCTIONS}
+        ${TERRAIN_HEIGHT_FUNCTION}
 
         void main() {
           vUv = uv;
 
-          vec3 pos = position * scale;
-          vec3 worldPos = pos + offset;
+          // GPU-side Z wrapping
+          float baseZ = offset.z;
+          float relZ = baseZ - uRoverZ;
+          float halfRange = uWrapRange * 0.5;
+          float wrappedZ = mod(relZ + halfRange, uWrapRange) - halfRange;
 
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(worldPos, 1.0);
+          // Calculate terrain height matching main grass shader
+          // Screen Z is inverted (camera looks at -Z), so negate wrappedZ
+          vec2 worldPos = vec2(offset.x, -wrappedZ - uRoverZ);
+          float terrainY = getTerrainHeight(worldPos) + 0.02;
+
+          vec3 pos = position * scale;
+          vec3 worldOffset = vec3(offset.x, terrainY, wrappedZ);
+
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(pos + worldOffset, 1.0);
         }
       `,
       fragmentShader: `
@@ -633,77 +680,28 @@ export class GrassSystem {
       }
     }
 
-    // Update grass shadow intensity based on sun
-    if (this.grassShadowMaterial) {
-      this.grassShadowMaterial.uniforms.uSunBrightness.value = sunBrightness;
-    }
-
     // Update fireflies (only at night)
     this.updateFireflies(delta, elapsed, sunBrightness, roverZ);
 
-    // Update grass positions with wrapping (optimized - only recalc height on wrap)
-    if (this.grass && this.baseOffsets && this.terrainSystem) {
-      const offsets = this.grass.geometry.attributes.offset.array;
-      const wrapRange = this.config.width;
-      const halfRange = wrapRange / 2;
-      const terrainY = this.terrainSystem.terrain ? this.terrainSystem.terrain.position.y : 0;
+    // GPU handles grass position wrapping and terrain height - just update uniforms
+    const terrainY = this.terrainSystem?.terrain?.position.y ?? 0;
+    const terrainHeight = this.terrainSystem?.config?.terrainHeight ?? 35.0;
+    const terrainScale = this.terrainSystem?.config?.terrainScale ?? 0.0005;
 
-      // Position grass mesh at terrain Y offset
+    if (this.grass && this.grassMaterial) {
+      this.grassMaterial.uniforms.uRoverZ.value = roverZ;
+      this.grassMaterial.uniforms.uTerrainHeight.value = terrainHeight;
+      this.grassMaterial.uniforms.uTerrainScale.value = terrainScale;
       this.grass.position.y = terrainY;
+    }
 
-      // Get shadow offsets if they exist
-      const shadowOffsets = this.grassShadows?.geometry?.attributes?.offset?.array;
-      if (this.grassShadows) {
-        this.grassShadows.position.y = terrainY;
-      }
-
-      const instanceCount = this.config.instanceCount;
-
-      // Initialize height cache if needed
-      if (!this.heightCache) {
-        this.heightCache = new Float32Array(instanceCount);
-        this.lastWrappedZ = new Float32Array(instanceCount);
-        for (let i = 0; i < instanceCount; i++) {
-          this.heightCache[i] = offsets[i * 3 + 1];
-          this.lastWrappedZ[i] = this.baseOffsets[i * 2 + 1];
-        }
-      }
-
-      for (let i = 0; i < instanceCount; i++) {
-        const baseX = this.baseOffsets[i * 2];
-        const baseZ = this.baseOffsets[i * 2 + 1];
-
-        // Calculate wrapped Z position
-        let wrappedZ = baseZ - roverZ;
-        wrappedZ = ((wrappedZ % wrapRange) + wrapRange + halfRange) % wrapRange - halfRange;
-
-        // Only recalculate height if blade wrapped around (sign change or big jump)
-        const lastZ = this.lastWrappedZ[i];
-        const wrapped = Math.abs(wrappedZ - lastZ) > wrapRange * 0.5;
-
-        if (wrapped) {
-          const worldZ = wrappedZ + roverZ;
-          this.heightCache[i] = this.terrainSystem.getHeight(baseX, worldZ);
-        }
-        this.lastWrappedZ[i] = wrappedZ;
-
-        // Update offset
-        offsets[i * 3] = baseX;
-        offsets[i * 3 + 1] = this.heightCache[i];
-        offsets[i * 3 + 2] = wrappedZ;
-
-        // Update shadow positions to match
-        if (shadowOffsets) {
-          shadowOffsets[i * 3] = baseX;
-          shadowOffsets[i * 3 + 1] = this.heightCache[i] + 0.02;
-          shadowOffsets[i * 3 + 2] = wrappedZ;
-        }
-      }
-
-      this.grass.geometry.attributes.offset.needsUpdate = true;
-      if (this.grassShadows) {
-        this.grassShadows.geometry.attributes.offset.needsUpdate = true;
-      }
+    // GPU handles grass shadow wrapping and terrain height too
+    if (this.grassShadows && this.grassShadowMaterial) {
+      this.grassShadowMaterial.uniforms.uRoverZ.value = roverZ;
+      this.grassShadowMaterial.uniforms.uSunBrightness.value = sunBrightness;
+      this.grassShadowMaterial.uniforms.uTerrainHeight.value = terrainHeight;
+      this.grassShadowMaterial.uniforms.uTerrainScale.value = terrainScale;
+      this.grassShadows.position.y = terrainY;
     }
 
     // Update shadows and clutter positions (wrap around)
@@ -717,9 +715,10 @@ export class GrassSystem {
       shadow.position.z = wrappedZ;
 
       // Only recalculate height on wrap
+      // GPU terrain samples at (-screenZ - roverZ), so use -wrappedZ - roverZ to match
       const lastZ = shadow.userData.lastWrappedZ ?? wrappedZ;
       if (Math.abs(wrappedZ - lastZ) > wrapRange * 0.5 || shadow.userData.cachedHeight === undefined) {
-        shadow.userData.cachedHeight = this.terrainSystem.getHeight(shadow.userData.worldX, wrappedZ + roverZ);
+        shadow.userData.cachedHeight = this.terrainSystem.getHeight(shadow.userData.worldX, -wrappedZ - roverZ);
       }
       shadow.userData.lastWrappedZ = wrappedZ;
       shadow.position.y = shadow.userData.cachedHeight + terrainBaseY + 0.05;
@@ -742,9 +741,10 @@ export class GrassSystem {
       item.position.z = wrappedZ;
 
       // Only recalculate height on wrap
+      // GPU terrain samples at (-screenZ - roverZ), so use -wrappedZ - roverZ to match
       const lastZ = item.userData.lastWrappedZ ?? wrappedZ;
       if (Math.abs(wrappedZ - lastZ) > wrapRange * 0.5 || item.userData.cachedHeight === undefined) {
-        item.userData.cachedHeight = this.terrainSystem.getHeight(item.userData.worldX, wrappedZ + roverZ);
+        item.userData.cachedHeight = this.terrainSystem.getHeight(item.userData.worldX, -wrappedZ - roverZ);
       }
       item.userData.lastWrappedZ = wrappedZ;
       item.position.y = item.userData.cachedHeight + terrainBaseY + 0.02;

@@ -1500,9 +1500,10 @@ export class FloraSystem {
 
       floraList.forEach(flora => {
         // Calculate display position with wrapping
-        const worldZ = flora.userData.worldZ - this.roverZ;
-        const wrappedZ = ((worldZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
-        const actualWorldZ = wrappedZ + this.roverZ;
+        const relZ = flora.userData.worldZ - this.roverZ;
+        const wrappedZ = ((relZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
+        // GPU terrain samples at (-screenZ - roverZ), so for screen position wrappedZ:
+        const actualWorldZ = -wrappedZ - this.roverZ;
 
         // Check biome match (simplified - skip if far from target)
         const biomeAtPosition = this.terrainSystem.getBiomeAtPosition(flora.userData.worldX, actualWorldZ);

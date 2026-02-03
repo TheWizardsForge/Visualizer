@@ -1,13 +1,16 @@
 import * as THREE from 'three';
-import { SimplexNoise } from './SimplexNoise.js';
+import { GPUHeightSampler } from './GPUHeightSampler.js';
+import { NOISE_FUNCTIONS, TERRAIN_HEIGHT_FUNCTION } from '../shaders/terrainNoise.glsl.js';
 
 /**
  * TerrainSystem - Handles terrain generation, biomes, and terrain-related features
+ *
+ * Uses GPU-first approach: all terrain height calculations happen on GPU.
+ * The GPUHeightSampler reads back heights for systems that need them on CPU.
  */
 export class TerrainSystem {
   constructor(scene, config = {}) {
     this.scene = scene;
-    this.noise = new SimplexNoise(config.seed || Date.now());
 
     // Configuration with defaults (spread config first, then apply defaults for missing/null values)
     this.config = {
@@ -26,6 +29,13 @@ export class TerrainSystem {
 
     this.terrain = null;
     this.terrainGeometry = null;
+
+    // GPU height sampler - initialized when renderer is available
+    this.heightSampler = null;
+
+    // Height request queue for batching
+    this.heightRequests = [];
+    this.heightRequestId = 0;
   }
 
   getDefaultBiomes() {
@@ -49,6 +59,21 @@ export class TerrainSystem {
     ];
   }
 
+  /**
+   * Initialize the GPU height sampler
+   * Must be called after renderer is available
+   */
+  initHeightSampler(renderer) {
+    this.heightSampler = new GPUHeightSampler(renderer, {
+      terrainHeight: this.config.terrainHeight,
+      terrainScale: this.config.terrainScale,
+      textureSize: 128, // Heightmap resolution
+      worldSize: 300    // World units covered by heightmap
+    });
+    // Initial render of heightmap centered at origin
+    this.heightSampler.updateCenter(0, 0);
+  }
+
   create() {
     const { terrainSize, terrainSegments } = this.config;
     const geometry = new THREE.PlaneGeometry(terrainSize, terrainSize, terrainSegments, terrainSegments);
@@ -62,6 +87,9 @@ export class TerrainSystem {
         uAudioBass: { value: 0 },
         uWeatherTint: { value: new THREE.Color(1, 1, 1) },
         uRoverZ: { value: 0 },
+        uTerrainHeight: { value: this.config.terrainHeight },
+        uTerrainScale: { value: this.config.terrainScale },
+        uSeed: { value: this.config.seed || 12345 },
         uEnergyPulseTime: { value: 0 },
         uEnergyPulseOrigin: { value: new THREE.Vector2(0, 0) },
         uEnergyPulseActive: { value: 0 },
@@ -80,7 +108,7 @@ export class TerrainSystem {
     this.terrain.position.y = -2;
     this.scene.add(this.terrain);
 
-    this.updateGeometry(0);
+    // No longer need CPU-side geometry updates - terrain is computed on GPU
     return this.terrain;
   }
 
@@ -92,13 +120,37 @@ export class TerrainSystem {
       varying vec3 vNormal;
       varying float vFogDepth;
       uniform float uRoverZ;
+      uniform float uTerrainHeight;
+      uniform float uTerrainScale;
+      uniform float uTime;
+      uniform float uSeed;
+
+      ${NOISE_FUNCTIONS}
+      ${TERRAIN_HEIGHT_FUNCTION}
+
       void main() {
-        vPosition = position;
-        vWorldPos = position;
-        vWorldPos.z -= uRoverZ;
-        vElevation = position.y;
-        vNormal = normal;
-        vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+        // Calculate world position
+        // Screen Z is inverted (camera looks at -Z), so negate position.z
+        vec2 worldPos = vec2(position.x, -position.z - uRoverZ);
+
+        // GPU-computed terrain height
+        float terrainY = getTerrainHeight(worldPos);
+
+        vec3 displacedPos = vec3(position.x, terrainY, position.z);
+
+        vPosition = displacedPos;
+        vWorldPos = vec3(position.x, terrainY, position.z - uRoverZ);
+        vElevation = terrainY;
+
+        // Calculate normal from neighboring heights (GPU-side)
+        float eps = 1.0;
+        float hL = getTerrainHeight(worldPos + vec2(-eps, 0.0));
+        float hR = getTerrainHeight(worldPos + vec2(eps, 0.0));
+        float hD = getTerrainHeight(worldPos + vec2(0.0, -eps));
+        float hU = getTerrainHeight(worldPos + vec2(0.0, eps));
+        vNormal = normalize(vec3(hL - hR, 2.0 * eps, hD - hU));
+
+        vec4 mvPosition = modelViewMatrix * vec4(displacedPos, 1.0);
         vFogDepth = -mvPosition.z;
         gl_Position = projectionMatrix * mvPosition;
       }
@@ -263,119 +315,69 @@ export class TerrainSystem {
     `;
   }
 
-  updateGeometry(offsetZ) {
-    if (!this.terrainGeometry) return;
-
-    const positions = this.terrainGeometry.attributes.position.array;
-    const segments = this.config.terrainSegments;
-    const size = this.config.terrainSize;
-
-    for (let i = 0; i <= segments; i++) {
-      for (let j = 0; j <= segments; j++) {
-        const index = (i * (segments + 1) + j) * 3;
-        const x = (j / segments - 0.5) * size;
-        const z = (i / segments - 0.5) * size + offsetZ;
-        positions[index + 1] = this.getHeight(x, z);
-      }
+  /**
+   * Request a terrain height sample at world position (x, z)
+   * The height will be available next frame via getHeightResult()
+   *
+   * @param {number} x - World X position
+   * @param {number} z - World Z position
+   * @param {string} id - Unique identifier for this request
+   */
+  requestHeight(x, z, id) {
+    if (!this.heightSampler) {
+      console.warn('TerrainSystem: heightSampler not initialized');
+      return;
     }
-    this.terrainGeometry.attributes.position.needsUpdate = true;
-    this.terrainGeometry.computeVertexNormals();
+    this.heightSampler.requestHeight(x, z, id);
   }
 
+  /**
+   * Get the result of a previous height request
+   * @param {string} id - The id used in requestHeight()
+   * @returns {number|undefined} The height, or undefined if not yet available
+   */
+  getHeightResult(id) {
+    if (!this.heightSampler) return undefined;
+    return this.heightSampler.getHeight(id);
+  }
+
+  /**
+   * Get terrain height at world position (x, z) - SYNCHRONOUS
+   * Uses GPU sampling with immediate readback.
+   *
+   * @param {number} x - World X position
+   * @param {number} z - World Z position (use -roverZ for positions relative to rover)
+   */
   getHeight(x, z) {
-    const scale = this.config.terrainScale;
-    const terrainHeight = this.config.terrainHeight;
-
-    // Get biome at this position
-    const biome = this.getBiomeAtPosition(x, z);
-    const biomeId = Math.floor(biome * this.config.biomeCount);
-
-    // Domain warping
-    const warpScale = scale * 0.4;
-    const warpX = this.noise.fbm(x * warpScale, z * warpScale, 2) * 200;
-    const warpZ = this.noise.fbm(x * warpScale + 1000, z * warpScale + 1000, 2) * 200;
-
-    // Base terrain
-    let height = this.noise.fbm((x + warpX) * scale, (z + warpZ) * scale, 4) * terrainHeight * 0.7;
-    height += this.noise.fbm(x * scale * 2.5, z * scale * 2.5, 3) * terrainHeight * 0.5;
-    height += this.noise.fbm(x * scale * 6, z * scale * 6, 2) * terrainHeight * 0.15;
-
-    // Ridged noise for peaks
-    const ridged = this.noise.ridgedFbm(x * scale * 3, z * scale * 3, 3);
-    height += ridged * terrainHeight * 0.35;
-
-    // Large-scale undulation
-    height += this.noise.fbm(x * scale * 0.3, z * scale * 0.3, 2) * terrainHeight * 0.25;
-
-    // Dips/pools
-    const dipNoise = this.noise.noise2D(x * scale * 0.8, z * scale * 0.8);
-    if (dipNoise < -0.6) {
-      const dipDepth = (-0.6 - dipNoise) * 2.5;
-      height -= dipDepth * dipDepth * terrainHeight * 0.5;
+    if (!this.heightSampler) {
+      // Fallback: return 0 if sampler not initialized
+      console.warn('TerrainSystem: heightSampler not initialized, returning 0');
+      return 0;
     }
-
-    // Craters
-    const craterNoise = this.noise.noise2D(x * 0.004, z * 0.004);
-    if (craterNoise > 0.7) {
-      const craterDepth = (craterNoise - 0.7) * 8;
-      height -= craterDepth * craterDepth * 2;
-    }
-
-    // Biome-specific terrain modifiers
-    height = this.applyBiomeTerrainModifier(height, biomeId, x, z, terrainHeight, scale);
-
-    return height;
+    // Don't re-center on every query - use the cached heightmap
+    // The heightmap is centered once per frame in update()
+    return this.heightSampler.getHeight(x, z);
   }
 
-  applyBiomeTerrainModifier(height, biomeId, x, z, terrainHeight, scale) {
-    switch (biomeId) {
-      case 3: // Dense Jungle
-        return height * 0.6;
+  /**
+   * Get multiple terrain heights at once - more efficient than multiple getHeight calls
+   * @param {Array<{x: number, z: number}>} positions
+   * @returns {Array<number>} heights
+   */
+  getHeights(positions) {
+    if (!this.heightSampler) {
+      return positions.map(() => 0);
+    }
+    return this.heightSampler.sampleHeightsSync(positions);
+  }
 
-      case 5: // Frozen Tundra
-        return height * 0.4;
-
-      case 7: // Ocean Depths
-        height *= 0.15;
-        height += Math.sin(x * 0.05 + this.time * 0.5) * 0.5;
-        height += Math.sin(z * 0.03 + this.time * 0.3) * 0.3;
-        return height;
-
-      case 10: // Alpine Mountains
-        height *= 1.5;
-        height += this.noise.ridgedFbm(x * scale * 3, z * scale * 3, 3) * terrainHeight * 0.8;
-        return height;
-
-      case 11: // Bamboo Forest - terraced
-        const terraceCount = 8;
-        height = Math.round(height / (terrainHeight / terraceCount)) * (terrainHeight / terraceCount);
-        return height * 0.7;
-
-      case 12: // Bioluminescent Caves
-        height *= 0.5;
-        const caveNoise = this.noise.noise2D(x * scale * 0.5, z * scale * 0.5);
-        if (caveNoise < -0.3) {
-          height -= ((-0.3 - caveNoise) * 3) * terrainHeight * 0.4;
-        }
-        return height;
-
-      case 13: // Desert Canyons
-        const mesaTerraces = 6;
-        height = Math.round(height / (terrainHeight / mesaTerraces)) * (terrainHeight / mesaTerraces);
-        height *= 0.8;
-        const canyonNoise = this.noise.noise2D(x * 0.01, z * 0.01);
-        if (canyonNoise < -0.5) {
-          height -= terrainHeight * 0.6;
-        }
-        return height;
-
-      case 14: // Mushroom Forest
-        height *= 0.6;
-        height += Math.sin(x * 0.15) * Math.cos(z * 0.12) * terrainHeight * 0.15;
-        return height;
-
-      default:
-        return height;
+  /**
+   * Process pending height requests
+   * Call this once per frame after all requestHeight() calls
+   */
+  processHeightRequests() {
+    if (this.heightSampler) {
+      this.heightSampler.update();
     }
   }
 
@@ -390,8 +392,7 @@ export class TerrainSystem {
     this.time = elapsed;
     this.roverPosition.z = roverZ;
 
-    this.updateGeometry(roverZ);
-
+    // GPU handles all terrain height calculations now - just update uniforms
     if (this.terrain) {
       if (audioData) {
         this.terrain.material.uniforms.uAudioBass.value +=
@@ -401,6 +402,30 @@ export class TerrainSystem {
       }
       this.terrain.material.uniforms.uTime.value = elapsed;
       this.terrain.material.uniforms.uRoverZ.value = roverZ;
+      // Sync terrain params in case they changed via UI
+      this.terrain.material.uniforms.uTerrainHeight.value = this.config.terrainHeight;
+      this.terrain.material.uniforms.uTerrainScale.value = this.config.terrainScale;
+    }
+
+    // Sync height sampler with terrain params and update center position
+    if (this.heightSampler) {
+      this.heightSampler.syncTerrainParams(
+        this.config.terrainHeight,
+        this.config.terrainScale
+      );
+      // Update heightmap center to current world position (0, -roverZ)
+      // This keeps the heightmap centered on visible terrain
+      this.heightSampler.updateCenter(0, -roverZ);
+
+      // Debug: Compare heightmap value with terrain shader uniforms
+      if (this._terrainDebugCount === undefined) this._terrainDebugCount = 0;
+      if (this._terrainDebugCount < 3) {
+        const screenCenterWorldZ = -roverZ;
+        const heightmapHeight = this.heightSampler.getHeight(0, screenCenterWorldZ);
+        const terrainUniforms = this.terrain.material.uniforms;
+        console.log(`TerrainDebug: heightmapH=${heightmapHeight.toFixed(2)}, terrain shader uniforms: scale=${terrainUniforms.uTerrainScale.value}, height=${terrainUniforms.uTerrainHeight.value}, roverZ=${terrainUniforms.uRoverZ.value.toFixed(1)}`);
+        this._terrainDebugCount++;
+      }
     }
   }
 
@@ -431,8 +456,11 @@ export class TerrainSystem {
   }
 
   setSeed(seed) {
-    this.noise = new SimplexNoise(seed);
-    this.updateGeometry(this.roverPosition.z);
+    // GPU terrain uses seedless deterministic noise
+    // The seed uniform affects terrain variation
+    if (this.terrain) {
+      this.terrain.material.uniforms.uSeed.value = seed;
+    }
   }
 
   dispose() {
@@ -440,6 +468,9 @@ export class TerrainSystem {
       this.scene.remove(this.terrain);
       this.terrain.geometry.dispose();
       this.terrain.material.dispose();
+    }
+    if (this.heightSampler) {
+      this.heightSampler.dispose();
     }
   }
 }
