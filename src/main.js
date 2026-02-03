@@ -46,7 +46,7 @@ class Visualizer {
     this.transitionDuration = 0.5; // seconds
 
     // Performance options
-    this.showFPS = true;
+    this.showFPS = false;
     this.frameRateCap = 0; // 0 = uncapped (vsync), 30, 60, etc.
     this.lastFrameTime = 0;
     this.frameCount = 0;
@@ -103,6 +103,7 @@ class Visualizer {
       z-index: 1001;
     `;
     this.fpsDisplay.textContent = 'FPS: --';
+    this.fpsDisplay.style.display = 'none'; // Hidden by default
     document.body.appendChild(this.fpsDisplay);
 
     // Build mode dropdown options

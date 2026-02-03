@@ -641,7 +641,7 @@ export class GrassSystem {
     // Update fireflies (only at night)
     this.updateFireflies(delta, elapsed, sunBrightness, roverZ);
 
-    // Update grass positions with wrapping
+    // Update grass positions with wrapping (optimized - only recalc height on wrap)
     if (this.grass && this.baseOffsets && this.terrainSystem) {
       const offsets = this.grass.geometry.attributes.offset.array;
       const wrapRange = this.config.width;
@@ -659,6 +659,16 @@ export class GrassSystem {
 
       const instanceCount = this.config.instanceCount;
 
+      // Initialize height cache if needed
+      if (!this.heightCache) {
+        this.heightCache = new Float32Array(instanceCount);
+        this.lastWrappedZ = new Float32Array(instanceCount);
+        for (let i = 0; i < instanceCount; i++) {
+          this.heightCache[i] = offsets[i * 3 + 1];
+          this.lastWrappedZ[i] = this.baseOffsets[i * 2 + 1];
+        }
+      }
+
       for (let i = 0; i < instanceCount; i++) {
         const baseX = this.baseOffsets[i * 2];
         const baseZ = this.baseOffsets[i * 2 + 1];
@@ -667,19 +677,25 @@ export class GrassSystem {
         let wrappedZ = baseZ - roverZ;
         wrappedZ = ((wrappedZ % wrapRange) + wrapRange + halfRange) % wrapRange - halfRange;
 
+        // Only recalculate height if blade wrapped around (sign change or big jump)
+        const lastZ = this.lastWrappedZ[i];
+        const wrapped = Math.abs(wrappedZ - lastZ) > wrapRange * 0.5;
+
+        if (wrapped) {
+          const worldZ = wrappedZ + roverZ;
+          this.heightCache[i] = this.terrainSystem.getHeight(baseX, worldZ);
+        }
+        this.lastWrappedZ[i] = wrappedZ;
+
         // Update offset
         offsets[i * 3] = baseX;
+        offsets[i * 3 + 1] = this.heightCache[i];
         offsets[i * 3 + 2] = wrappedZ;
-
-        // Calculate terrain height at current world position
-        const worldZ = wrappedZ + roverZ;
-        const terrainHeight = this.terrainSystem.getHeight(baseX, worldZ);
-        offsets[i * 3 + 1] = terrainHeight;
 
         // Update shadow positions to match
         if (shadowOffsets) {
           shadowOffsets[i * 3] = baseX;
-          shadowOffsets[i * 3 + 1] = terrainHeight + 0.02; // Slightly above ground
+          shadowOffsets[i * 3 + 1] = this.heightCache[i] + 0.02;
           shadowOffsets[i * 3 + 2] = wrappedZ;
         }
       }

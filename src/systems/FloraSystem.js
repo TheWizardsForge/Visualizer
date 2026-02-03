@@ -1488,6 +1488,12 @@ export class FloraSystem {
     const halfRange = wrapRange / 2;
     const biomeCount = this.terrainSystem.config.biomeCount;
 
+    // Pre-calculate night tint values (avoid recalculating per flora)
+    const ambientLevel = 0.15 + sunBrightness * 0.85;
+    const nightTintR = 0.7 + 0.3 * sunBrightness;
+    const nightTintG = 0.75 + 0.25 * sunBrightness;
+    const nightTintB = 0.9 + 0.1 * sunBrightness;
+
     for (const [biomeIdStr, floraList] of Object.entries(this.biomeFlora)) {
       const targetBiome = parseInt(biomeIdStr);
       if (!floraList) continue;
@@ -1498,48 +1504,56 @@ export class FloraSystem {
         const wrappedZ = ((worldZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
         const actualWorldZ = wrappedZ + this.roverZ;
 
-        // Check biome match
+        // Check biome match (simplified - skip if far from target)
         const biomeAtPosition = this.terrainSystem.getBiomeAtPosition(flora.userData.worldX, actualWorldZ);
-        const biomeMatch = Math.abs(biomeAtPosition * biomeCount - targetBiome) < 1.5 ||
-                          Math.abs(biomeAtPosition * biomeCount - targetBiome - biomeCount) < 1.5 ||
-                          Math.abs(biomeAtPosition * biomeCount - targetBiome + biomeCount) < 1.5;
+        const biomeDiff = Math.abs(biomeAtPosition * biomeCount - targetBiome);
+        const biomeMatch = biomeDiff < 1.5 || biomeDiff > biomeCount - 1.5;
 
         flora.visible = biomeMatch;
 
         if (flora.visible) {
           flora.position.z = wrappedZ;
-          flora.position.y = this.terrainSystem.getHeight(flora.userData.worldX, actualWorldZ) +
-                            this.terrainSystem.terrain.position.y;
+
+          // Only recalculate height if flora wrapped around
+          const lastZ = flora.userData.lastWrappedZ ?? wrappedZ;
+          if (Math.abs(wrappedZ - lastZ) > wrapRange * 0.5 || flora.userData.cachedHeight === undefined) {
+            flora.userData.cachedHeight = this.terrainSystem.getHeight(flora.userData.worldX, actualWorldZ);
+          }
+          flora.userData.lastWrappedZ = wrappedZ;
+
+          flora.position.y = flora.userData.cachedHeight + this.terrainSystem.terrain.position.y;
 
           // Gentle sway
           flora.rotation.x = Math.sin(elapsed * 0.5 + flora.position.x * 0.1) * 0.03;
           flora.rotation.z = Math.cos(elapsed * 0.3 + flora.position.z * 0.1) * 0.03;
 
-          // Update shader uniforms and apply night darkening
-          const ambientLevel = 0.15 + sunBrightness * 0.85;
-          const nightTint = { r: 0.7, g: 0.75, b: 0.9 };
+          // Update materials only if we have cached children (avoid traverse every frame)
+          if (!flora.userData.materialChildren) {
+            flora.userData.materialChildren = [];
+            flora.traverse(child => {
+              if (child.material) {
+                flora.userData.materialChildren.push(child);
+                if (child.material.isMeshBasicMaterial && child.material.color && !child.userData.baseColor) {
+                  child.userData.baseColor = child.material.color.clone();
+                }
+              }
+            });
+          }
 
-          flora.traverse(child => {
-            if (child.material?.uniforms?.uTime) {
+          // Update cached material children
+          for (const child of flora.userData.materialChildren) {
+            if (child.material.uniforms?.uTime) {
               child.material.uniforms.uTime.value = elapsed + this.floraAudioBass;
             }
-
-            // Apply night darkening to MeshBasicMaterial objects
-            if (child.material && child.material.isMeshBasicMaterial) {
-              // Store base color if not already stored
-              if (!child.userData.baseColor && child.material.color) {
-                child.userData.baseColor = child.material.color.clone();
-              }
-              // Apply night darkening
-              if (child.userData.baseColor) {
-                const base = child.userData.baseColor;
-                const tintedR = base.r * (nightTint.r + (1 - nightTint.r) * sunBrightness) * ambientLevel;
-                const tintedG = base.g * (nightTint.g + (1 - nightTint.g) * sunBrightness) * ambientLevel;
-                const tintedB = base.b * (nightTint.b + (1 - nightTint.b) * sunBrightness) * ambientLevel;
-                child.material.color.setRGB(tintedR, tintedG, tintedB);
-              }
+            if (child.material.isMeshBasicMaterial && child.userData.baseColor) {
+              const base = child.userData.baseColor;
+              child.material.color.setRGB(
+                base.r * nightTintR * ambientLevel,
+                base.g * nightTintG * ambientLevel,
+                base.b * nightTintB * ambientLevel
+              );
             }
-          });
+          }
         }
       });
     }
