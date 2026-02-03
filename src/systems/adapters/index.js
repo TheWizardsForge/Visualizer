@@ -21,3 +21,4 @@ export { FireflyAdapter } from './FireflyAdapter.js';
 export { WispAdapter } from './WispAdapter.js';
 export { SkyAdapter } from './SkyAdapter.js';
 export { CameraAdapter } from './CameraAdapter.js';
+export { ShadowAdapter } from './ShadowAdapter.js';

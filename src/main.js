@@ -66,9 +66,27 @@ class Visualizer {
   getQualitySettings() {
     // Returns settings based on quality level
     const settings = {
-      low: { terrainSegments: 50, grassCount: 15000, clutterDensity: 30 },
-      medium: { terrainSegments: 100, grassCount: 30000, clutterDensity: 60 },
-      high: { terrainSegments: 150, grassCount: 50000, clutterDensity: 100 }
+      low: {
+        terrainSegments: 50,
+        grassCount: 15000,
+        clutterDensity: 30,
+        maxShadows: 0,         // Shadows disabled
+        dappleEnabled: false
+      },
+      medium: {
+        terrainSegments: 100,
+        grassCount: 30000,
+        clutterDensity: 60,
+        maxShadows: 200,
+        dappleEnabled: false   // Solid shadows only
+      },
+      high: {
+        terrainSegments: 150,
+        grassCount: 50000,
+        clutterDensity: 100,
+        maxShadows: 500,
+        dappleEnabled: true    // Full dappled shadows
+      }
     };
     return settings[this.qualityLevel] || settings.high;
   }

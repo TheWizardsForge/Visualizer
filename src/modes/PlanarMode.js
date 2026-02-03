@@ -13,7 +13,8 @@ import {
   FireflyAdapter,
   WispAdapter,
   SkyAdapter,
-  CameraAdapter
+  CameraAdapter,
+  ShadowAdapter
 } from '../systems/adapters/index.js';
 
 /**
@@ -80,6 +81,7 @@ export class PlanarMode extends BaseMode {
     this.skySystem = null;
     this.atmosphereSystem = null;
     this.cameraSystem = null;
+    this.shadowSystem = null;
     this.floraSystem = null;
     this.faunaSystem = null;
     this.grassSystem = null;
@@ -139,6 +141,9 @@ export class PlanarMode extends BaseMode {
         grassShadows: 0.0, // Per-blade shadows now handled by GrassSystem
         clutterEnabled: true,
         clutterDensity: 150,
+        // Shadows - enabled for earthlike forests
+        shadowsEnabled: true,
+        shadowOpacity: 0.5,
         // Flora - realistic procedural trees for earthlike realm
         floraTypes: {
           0: 'proceduralMixed',  // Mixed forest with oaks, pines, willows
@@ -285,6 +290,9 @@ export class PlanarMode extends BaseMode {
         grassColor: 0x2a6050, // Teal-tinted magical grass
         clutterEnabled: true,
         clutterDensity: 120,
+        // Shadows - enabled for magical forests
+        shadowsEnabled: true,
+        shadowOpacity: 0.4, // Slightly softer for magical realm
         // Flora - magical fey with procedural branches
         floraTypes: {
           0: 'feyBranches',     // Magical procedural fey branches
@@ -381,6 +389,9 @@ export class PlanarMode extends BaseMode {
         bloomRadius: 0.5,
         underwaterAlways: false,
         heatDistortion: true,
+        // Shadows - enabled for ash trees
+        shadowsEnabled: true,
+        shadowOpacity: 0.3, // Softer shadows due to ambient glow
         // Flora - volcanic with glowing ember veins
         floraTypes: {
           0: 'emberVeins',      // Glowing procedural ember structures
@@ -506,15 +517,24 @@ export class PlanarMode extends BaseMode {
     });
     this.systemManager.register('sky', skyAdapter, ['atmosphere']);
 
-    // 4. Flora (depends on terrain)
+    // 4. Shadow (depends on terrain, needed by flora)
+    const shadowAdapter = new ShadowAdapter(this.scene, this.context, {
+      enabled: realmConfig.shadowsEnabled ?? true,
+      maxShadows: this.qualitySettings.maxShadows ?? 500,
+      baseOpacity: realmConfig.shadowOpacity ?? 0.5,
+      dappleEnabled: this.qualitySettings.dappleEnabled ?? true
+    });
+    this.systemManager.register('shadow', shadowAdapter, ['terrain']);
+
+    // 5. Flora (depends on terrain, shadow)
     const floraAdapter = new FloraAdapter(this.scene, this.context, {
       enabled: this.params.floraEnabled,
       floraTypes: realmConfig.floraTypes,
       sporeCount: realmConfig.sporeCount || 300
     });
-    this.systemManager.register('flora', floraAdapter, ['terrain']);
+    this.systemManager.register('flora', floraAdapter, ['terrain', 'shadow']);
 
-    // 5. Grass (depends on terrain)
+    // 6. Grass (depends on terrain)
     const grassAdapter = new GrassAdapter(this.scene, this.context, {
       enabled: realmConfig.grassEnabled ?? false,
       instanceCount: Math.min(realmConfig.grassDensity ?? 50000, this.qualitySettings.grassCount),
@@ -524,14 +544,14 @@ export class PlanarMode extends BaseMode {
     });
     this.systemManager.register('grass', grassAdapter, ['terrain']);
 
-    // 6. Fauna (depends on terrain)
+    // 7. Fauna (depends on terrain)
     const faunaAdapter = new FaunaAdapter(this.scene, this.context, {
       enabled: this.params.faunaEnabled,
       faunaTypes: realmConfig.faunaTypes
     });
     this.systemManager.register('fauna', faunaAdapter, ['terrain']);
 
-    // 7. Firefly (depends on terrain, atmosphere for night check)
+    // 8. Firefly (depends on terrain, atmosphere for night check)
     const fireflyAdapter = new FireflyAdapter(this.scene, this.context, {
       count: realmConfig.fireflyCount ?? 300,
       areaSize: 80,
@@ -545,7 +565,7 @@ export class PlanarMode extends BaseMode {
     });
     this.systemManager.register('firefly', fireflyAdapter, ['terrain', 'atmosphere']);
 
-    // 8. Wisp (depends on terrain, atmosphere)
+    // 9. Wisp (depends on terrain, atmosphere)
     const wispAdapter = new WispAdapter(this.scene, this.context, {
       count: realmConfig.wispCount ?? 40,
       maxLights: realmConfig.wispCount ?? 40,
@@ -561,7 +581,7 @@ export class PlanarMode extends BaseMode {
     });
     this.systemManager.register('wisp', wispAdapter, ['terrain', 'atmosphere']);
 
-    // 9. Camera (depends on terrain)
+    // 10. Camera (depends on terrain)
     const cameraAdapter = new CameraAdapter(this.scene, this.context, {
       camera: this.camera,
       fov: this.params.fov,
@@ -577,6 +597,7 @@ export class PlanarMode extends BaseMode {
     this.terrainSystem = this.systemManager.get('terrain');
     this.atmosphereSystem = this.systemManager.get('atmosphere');
     this.skySystem = this.systemManager.get('sky');
+    this.shadowSystem = this.systemManager.get('shadow');
     this.floraSystem = this.systemManager.get('flora');
     this.grassSystem = this.systemManager.get('grass');
     this.faunaSystem = this.systemManager.get('fauna');

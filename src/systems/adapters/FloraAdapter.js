@@ -22,6 +22,12 @@ export class FloraAdapter extends BaseSystem {
       floraTypes: this.config.floraTypes,
       sporeCount: this.config.sporeCount ?? 300
     });
+
+    // Set shadow system if available (registered before flora in dependency order)
+    if (this.context.shadowSystem) {
+      this.system.setShadowSystem(this.context.shadowSystem);
+    }
+
     this.system.create();
   }
 

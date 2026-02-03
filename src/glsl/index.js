@@ -68,6 +68,14 @@ import {
   TERRAIN_UNIFORMS
 } from './terrain/height.glsl.js';
 
+// Shadow modules
+import {
+  SHADOW_UNIFORMS,
+  BLOB_SHADOW_VERTEX,
+  BLOB_SHADOW_FRAGMENT,
+  BLOB_SHADOW_COMPLETE
+} from './shadows/index.js';
+
 /**
  * GLSL module namespace
  *
@@ -133,6 +141,14 @@ export const GLSL = {
     height: TERRAIN_HEIGHT,           // Just the function (needs noise)
     complete: TERRAIN_COMPLETE,       // Includes noise dependencies
     uniforms: TERRAIN_UNIFORMS        // JavaScript uniform definitions
+  },
+
+  // Shadows
+  shadows: {
+    uniforms: SHADOW_UNIFORMS,
+    vertex: BLOB_SHADOW_VERTEX,
+    fragment: BLOB_SHADOW_FRAGMENT,
+    complete: BLOB_SHADOW_COMPLETE
   }
 };
 
@@ -161,7 +177,13 @@ export {
   // Terrain
   TERRAIN_HEIGHT,
   TERRAIN_COMPLETE,
-  TERRAIN_UNIFORMS
+  TERRAIN_UNIFORMS,
+
+  // Shadows
+  SHADOW_UNIFORMS,
+  BLOB_SHADOW_VERTEX,
+  BLOB_SHADOW_FRAGMENT,
+  BLOB_SHADOW_COMPLETE
 };
 
 export default GLSL;

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { ProceduralFloraSystem } from './ProceduralFloraSystem.js';
+import { ShadowSystem } from './ShadowSystem.js';
 
 /**
  * FloraSystem - Handles biome-specific flora creation and updates
@@ -44,6 +45,17 @@ export class FloraSystem {
 
     // Procedural flora system for advanced generation
     this.proceduralFlora = new ProceduralFloraSystem();
+
+    // Shadow system reference (set externally)
+    this.shadowSystem = null;
+  }
+
+  /**
+   * Set the shadow system for registering flora shadows
+   * @param {ShadowSystem} shadowSystem
+   */
+  setShadowSystem(shadowSystem) {
+    this.shadowSystem = shadowSystem;
   }
 
   getDefaultFloraTypes() {
@@ -136,6 +148,16 @@ export class FloraSystem {
     this.scene.add(flora);
     this.biomeFlora[biomeId].push(flora);
     this.flora.push(flora);
+
+    // Register shadow if shadow system available and flora has shadow data
+    if (this.shadowSystem && flora.userData.shadowRadius) {
+      this.shadowSystem.registerShadow(
+        flora.userData.worldX ?? flora.position.x,
+        flora.userData.worldZ ?? flora.position.z,
+        flora.userData.shadowRadius,
+        flora.userData.shadowType || 'solid'
+      );
+    }
   }
 
   // Biome 0: Purple alien desert - spore pods
@@ -985,6 +1007,13 @@ export class FloraSystem {
       mushroom.position.set(pos.x, 0, pos.z);
       mushroom.userData.worldX = mushroom.position.x;
       mushroom.userData.worldZ = mushroom.position.z;
+
+      // Shadow data for giant mushroom (use cap radius)
+      mushroom.userData.capRadius = capSize;
+      const shadowParams = ShadowSystem.getShadowParams('giantMushroom', height, { capRadius: capSize });
+      mushroom.userData.shadowRadius = shadowParams.radius;
+      mushroom.userData.shadowType = shadowParams.type;
+
       this.addFlora(mushroom, biomeId);
     }
 
@@ -1021,6 +1050,13 @@ export class FloraSystem {
       mushroom.position.set(pos.x, 0, pos.z);
       mushroom.userData.worldX = mushroom.position.x;
       mushroom.userData.worldZ = mushroom.position.z;
+
+      // Shadow for medium mushrooms
+      mushroom.userData.capRadius = capSize;
+      const shadowParams = ShadowSystem.getShadowParams('giantMushroom', height, { capRadius: capSize });
+      mushroom.userData.shadowRadius = shadowParams.radius;
+      mushroom.userData.shadowType = shadowParams.type;
+
       this.addFlora(mushroom, biomeId);
     }
 
@@ -1116,6 +1152,12 @@ export class FloraSystem {
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
+
+      // Shadow data for fey trees (large dappled shadow)
+      const shadowParams = ShadowSystem.getShadowParams('feyTree', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
 
@@ -1175,6 +1217,12 @@ export class FloraSystem {
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
+
+      // Shadow for medium fey trees
+      const shadowParams = ShadowSystem.getShadowParams('feyTree', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
   }
@@ -1352,6 +1400,12 @@ export class FloraSystem {
       tree.position.set((Math.random() - 0.5) * 200, 0, (Math.random() - 0.5) * 200);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
+
+      // Shadow for ash trees (solid dark shadow)
+      const shadowParams = ShadowSystem.getShadowParams('ashTree', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
   }
@@ -1646,11 +1700,18 @@ export class FloraSystem {
       // Large trees: scale 3-6 (roughly 15-30 units tall)
       const scale = 3 + Math.random() * 3;
       const tree = this.proceduralFlora.createOakTree(scale);
+      const height = scale * 5; // Approximate tree height
 
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data for oak trees (dappled light through leaves)
+      const shadowParams = ShadowSystem.getShadowParams('proceduralOak', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
 
@@ -1659,10 +1720,18 @@ export class FloraSystem {
     for (const pos of understory) {
       const scale = 1 + Math.random() * 1.5;
       const tree = this.proceduralFlora.createOakTree(scale);
+      const height = scale * 5;
+
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Smaller shadow for understory
+      const shadowParams = ShadowSystem.getShadowParams('proceduralOak', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
   }
@@ -1675,11 +1744,18 @@ export class FloraSystem {
       // Tall pines: scale 4-8 (roughly 25-50 units tall)
       const scale = 4 + Math.random() * 4;
       const tree = this.proceduralFlora.createPineTree(scale);
+      const height = scale * 6; // Pine trees are taller
 
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data for pine trees (solid conical shadow)
+      const shadowParams = ShadowSystem.getShadowParams('proceduralPine', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
 
@@ -1688,10 +1764,18 @@ export class FloraSystem {
     for (const pos of young) {
       const scale = 1.5 + Math.random() * 2;
       const tree = this.proceduralFlora.createPineTree(scale);
+      const height = scale * 6;
+
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Smaller shadow for young pines
+      const shadowParams = ShadowSystem.getShadowParams('proceduralPine', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
   }
@@ -1705,11 +1789,18 @@ export class FloraSystem {
       // Large willows: scale 4-7
       const scale = 4 + Math.random() * 3;
       const tree = this.proceduralFlora.createWillowTree(scale);
+      const height = scale * 4; // Willows are shorter but wider
 
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data for willow trees (wide dappled shadow)
+      const shadowParams = ShadowSystem.getShadowParams('proceduralWillow', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
   }
@@ -1721,10 +1812,18 @@ export class FloraSystem {
     for (const pos of oakPositions) {
       const scale = 4 + Math.random() * 3;
       const tree = this.proceduralFlora.createOakTree(scale);
+      const height = scale * 5;
+
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data
+      const shadowParams = ShadowSystem.getShadowParams('proceduralOak', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
 
@@ -1733,10 +1832,18 @@ export class FloraSystem {
     for (const pos of pinePositions) {
       const scale = 3.5 + Math.random() * 4;
       const tree = this.proceduralFlora.createPineTree(scale);
+      const height = scale * 6;
+
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data
+      const shadowParams = ShadowSystem.getShadowParams('proceduralPine', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
 
@@ -1745,10 +1852,18 @@ export class FloraSystem {
     for (const pos of willowPositions) {
       const scale = 3 + Math.random() * 3;
       const tree = this.proceduralFlora.createWillowTree(scale);
+      const height = scale * 4;
+
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data
+      const shadowParams = ShadowSystem.getShadowParams('proceduralWillow', height);
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
 
@@ -1756,13 +1871,25 @@ export class FloraSystem {
     const saplings = this.generateForestPositions(8, 5, 20);
     for (const pos of saplings) {
       const scale = 0.8 + Math.random() * 1.2;
-      const tree = Math.random() > 0.5
+      const isOak = Math.random() > 0.5;
+      const tree = isOak
         ? this.proceduralFlora.createOakTree(scale)
         : this.proceduralFlora.createPineTree(scale);
+      const height = scale * (isOak ? 5 : 6);
+
       tree.position.set(pos.x, 0, pos.z);
       tree.userData.worldX = tree.position.x;
       tree.userData.worldZ = tree.position.z;
       tree.rotation.y = Math.random() * Math.PI * 2;
+
+      // Shadow data for saplings (smaller)
+      const shadowParams = ShadowSystem.getShadowParams(
+        isOak ? 'proceduralOak' : 'proceduralPine',
+        height
+      );
+      tree.userData.shadowRadius = shadowParams.radius;
+      tree.userData.shadowType = shadowParams.type;
+
       this.addFlora(tree, biomeId);
     }
   }
