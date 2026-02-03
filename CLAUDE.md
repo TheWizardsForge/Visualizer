@@ -24,30 +24,95 @@ npm run preview  # Preview production build
 
 ## Architecture
 
+### Unified Architecture (Core Abstractions)
+
+The codebase uses a unified architecture with centralized state management and automatic system orchestration.
+
+#### WorldContext (`src/core/WorldContext.js`)
+Single source of truth for all shared state:
+```js
+context.delta          // Frame delta time
+context.elapsed        // Total elapsed time
+context.roverZ         // Camera Z position (movement)
+context.roverX         // Camera X position (lateral)
+context.terrainY       // Current terrain height
+context.sunBrightness  // 0-1 based on day/night cycle
+context.dayNightCycle  // 0-1 (0=midnight, 0.5=noon)
+context.audioData      // { bass, mid, treble, overall }
+context.terrainSystem  // Reference for height sampling
+context.lightManager   // Central light registry
+```
+
+#### SystemManager (`src/core/SystemManager.js`)
+Orchestrates system lifecycle with dependency-based ordering:
+```js
+const manager = new SystemManager(context);
+manager.register('terrain', terrainAdapter);
+manager.register('flora', floraAdapter, ['terrain']);  // depends on terrain
+manager.register('firefly', fireflyAdapter, ['terrain', 'atmosphere']);
+
+manager.createAll();        // Topological order
+manager.initAll(renderer);  // GPU resources
+manager.update();           // Per-frame updates
+manager.disposeAll();       // Reverse order cleanup
+```
+
+#### BaseSystem (`src/core/BaseSystem.js`)
+Interface all systems implement:
+```js
+class MySystem extends BaseSystem {
+  create()           // Build geometry, materials
+  init(renderer)     // Initialize GPU resources
+  update()           // Per-frame logic, reads from this.context
+  dispose()          // Cleanup
+}
+```
+
+#### LightManager (`src/lights/LightManager.js`)
+Central registry for dynamic light sources:
+```js
+lightManager.registerSource('firefly', color, radius);
+lightManager.updateSource('firefly', positions);  // Updates data texture
+lightManager.getTexture('firefly');               // For shader uniforms
+```
+
 ### Core Structure
 - `src/main.js` - Entry point, manages mode switching, GUI, keyboard controls, and render loop
 - `src/audio/AudioAnalyzer.js` - Web Audio API wrapper for frequency analysis (bass/mid/treble/overall)
 - `src/modes/BaseMode.js` - Abstract base class all visual modes extend
+- `src/core/` - Unified architecture (WorldContext, SystemManager, BaseSystem, ZWrapper)
+- `src/lights/` - Centralized lighting (LightManager)
 
 ### Systems (`src/systems/`)
-GPU-first reusable systems:
-- `TerrainSystem.js` - GPU terrain generation with biomes, dynamic lighting
-- `GrassSystem.js` - Instanced grass with GPU terrain sampling
-- `SkySystem.js` - Stars, nebulae, moons
-- `AtmosphereSystem.js` - Weather, fog, day/night cycle
-- `CameraSystem.js` - Multiple camera modes with collision avoidance
-- `FloraSystem.js` - Procedural trees and plants
-- `FaunaSystem.js` - Animated creatures
-- `FireflySystem.js` - GPU-instanced fireflies with dynamic lighting
-- `WispSystem.js` - Ethereal light sources with dynamic lighting
+GPU-first reusable systems. Each system has an **adapter** in `src/systems/adapters/` that wraps it for the unified architecture:
 
-### Realms (`src/realms/`)
-Realm configurations for different planes of existence:
-- `TheMaterial.js` - Earth-like natural biomes
-- `TheDeep.js` - Underwater world
-- `TheVerdantWild.js` - Fey forest with giant mushrooms
-- `TheDrift.js` - Floating islands
-- `TheEmberPlane.js` - Volcanic, lava, ash
+| System | Adapter | Purpose |
+|--------|---------|---------|
+| `TerrainSystem.js` | `TerrainAdapter.js` | GPU terrain with biomes, dynamic lighting |
+| `GrassSystem.js` | `GrassAdapter.js` | Instanced grass with GPU terrain sampling |
+| `SkySystem.js` | `SkyAdapter.js` | Stars, nebulae, moons |
+| `AtmosphereSystem.js` | `AtmosphereAdapter.js` | Weather, fog, day/night, post-processing |
+| `CameraSystem.js` | `CameraAdapter.js` | Multiple camera modes |
+| `FloraSystem.js` | `FloraAdapter.js` | Procedural trees and plants |
+| `FaunaSystem.js` | `FaunaAdapter.js` | Animated creatures |
+| `FireflySystem.js` | `FireflyAdapter.js` | GPU-instanced fireflies |
+| `WispSystem.js` | `WispAdapter.js` | Ethereal light sources |
+
+**Adding a new system:**
+1. Create `src/systems/MySystem.js` with the core logic
+2. Create `src/systems/adapters/MyAdapter.js` extending `BaseSystem`
+3. Export from `src/systems/adapters/index.js`
+4. Register in `PlanarMode.setupScene()` with dependencies
+
+### Realms
+Realm configurations are defined in `PlanarMode.getRealmConfig()`. Each realm specifies:
+- Terrain: biomes, height, scale, alien veins
+- Sky: type, stars, nebulae, moons, aurora
+- Atmosphere: fog, bloom, underwater effects
+- Flora/Fauna: types per biome
+- Grass: enabled, density, color
+
+Available realms: `material`, `astral`, `deep`, `verdant`, `drift`, `ember`
 
 ### Visual Modes (`src/modes/`)
 Each mode extends `BaseMode` and implements:

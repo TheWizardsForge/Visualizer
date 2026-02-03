@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { NOISE_FUNCTIONS, TERRAIN_HEIGHT_FUNCTION } from '../shaders/terrainNoise.glsl.js';
+import { DYNAMIC_LIGHTING_SIMPLE } from '../glsl/lighting/dynamic.glsl.js';
 
 /**
  * GrassSystem - Instanced grass rendering with wind animation
@@ -346,78 +347,12 @@ export class GrassSystem {
       `,
       fragmentShader: `
         uniform float uAmbientLight;
-        uniform sampler2D uFireflyLights;
-        uniform int uFireflyLightCount;
-        uniform vec3 uFireflyLightColor;
-        uniform float uFireflyLightRadius;
-        uniform sampler2D uWispLights;
-        uniform int uWispLightCount;
-        uniform vec3 uWispLightColor;
-        uniform float uWispLightRadius;
-
         varying vec3 vColor;
         varying float vY;
         varying vec3 vWorldPos;
 
-        vec3 calculateFireflyLighting(vec3 worldPos) {
-          vec3 totalLight = vec3(0.0);
-          float texelSize = 1.0 / float(uFireflyLightCount);
-
-          for (int i = 0; i < 32; i++) {
-            if (i >= uFireflyLightCount) break;
-
-            vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-            vec3 lightPos = lightData.xyz;
-            float intensity = lightData.w;
-
-            if (intensity > 0.01) {
-              // Use 2D horizontal distance for ground illumination
-              vec2 toLight2D = lightPos.xz - worldPos.xz;
-              float dist = length(toLight2D);
-
-              // Soft attenuation
-              float radius = uFireflyLightRadius;
-              float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
-              attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
-
-              totalLight += uFireflyLightColor * intensity * attenuation;
-            }
-          }
-
-          return totalLight;
-        }
-
-        vec3 calculateWispLighting(vec3 worldPos) {
-          vec3 totalLight = vec3(0.0);
-          float texelSize = 1.0 / float(uWispLightCount);
-
-          for (int i = 0; i < 40; i++) {
-            if (i >= uWispLightCount) break;
-
-            vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-            vec3 lightPos = lightData.xyz;
-            float intensity = lightData.w;
-
-            if (intensity > 0.01) {
-              // Use 2D horizontal distance (XZ) for cylindrical light falloff
-              vec2 toLight2D = lightPos.xz - worldPos.xz;
-              float dist = length(toLight2D);
-
-              // Hard cutoff at radius
-              float radius = uWispLightRadius;
-              if (dist > radius) continue;
-
-              // Exponential falloff for concentrated glow
-              float normalizedDist = dist / radius;
-              float attenuation = exp(-normalizedDist * 3.0);
-              attenuation *= (1.0 - normalizedDist);
-
-              totalLight += uWispLightColor * intensity * attenuation;
-            }
-          }
-
-          return totalLight;
-        }
+        // Dynamic lighting (shared module - simple version without normals)
+        ${DYNAMIC_LIGHTING_SIMPLE}
 
         void main() {
           // Start with base color, boosted for visibility
@@ -443,11 +378,11 @@ export class GrassSystem {
           col *= ambientColor * (0.15 + uAmbientLight * 0.85);
 
           // Add firefly dynamic lighting (warm yellow-green glow)
-          vec3 fireflyLight = calculateFireflyLighting(vWorldPos);
+          vec3 fireflyLight = calculateFireflyLightingSimple(vWorldPos);
           col += fireflyLight * 0.15;
 
           // Add wisp dynamic lighting (warm orange glow)
-          vec3 wispLight = calculateWispLighting(vWorldPos);
+          vec3 wispLight = calculateWispLightingSimple(vWorldPos);
           col += wispLight * 0.2;
 
           gl_FragColor = vec4(col, 1.0);

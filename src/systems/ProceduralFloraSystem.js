@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { DYNAMIC_LIGHTING_SIMPLE } from '../glsl/lighting/dynamic.glsl.js';
 
 /**
  * ProceduralFloraSystem - Visually appealing procedural flora generation
@@ -73,21 +74,15 @@ export class ProceduralFloraSystem {
         uniform float uSunBrightness;
         uniform float uTime;
         uniform float uDitherDistance;
-        // Dynamic lighting uniforms
-        uniform sampler2D uFireflyLights;
-        uniform int uFireflyLightCount;
-        uniform vec3 uFireflyLightColor;
-        uniform float uFireflyLightRadius;
-        uniform sampler2D uWispLights;
-        uniform int uWispLightCount;
-        uniform vec3 uWispLightColor;
-        uniform float uWispLightRadius;
 
         varying vec3 vNormal;
         varying vec3 vLocalPos;
         varying vec3 vViewDir;
         varying float vCameraDist;
         varying vec3 vWorldPos;
+
+        // Dynamic lighting (shared module)
+        ${DYNAMIC_LIGHTING_SIMPLE}
 
         // Simple noise for color variation
         float hash(vec3 p) {
@@ -112,49 +107,6 @@ export class ProceduralFloraSystem {
             if (i == index) return thresholds[i];
           }
           return 0.0;
-        }
-
-        vec3 calculateFireflyLighting(vec3 worldPos) {
-          vec3 totalLight = vec3(0.0);
-          float texelSize = 1.0 / float(uFireflyLightCount);
-          for (int i = 0; i < 32; i++) {
-            if (i >= uFireflyLightCount) break;
-            vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-            vec3 lightPos = lightData.xyz;
-            float intensity = lightData.w;
-            if (intensity > 0.01) {
-              vec2 toLight2D = lightPos.xz - worldPos.xz;
-              float dist = length(toLight2D);
-              float radius = uFireflyLightRadius;
-              float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
-              attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
-              totalLight += uFireflyLightColor * intensity * attenuation;
-            }
-          }
-          return totalLight;
-        }
-
-        vec3 calculateWispLighting(vec3 worldPos) {
-          vec3 totalLight = vec3(0.0);
-          float texelSize = 1.0 / float(uWispLightCount);
-          for (int i = 0; i < 40; i++) {
-            if (i >= uWispLightCount) break;
-            vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-            vec3 lightPos = lightData.xyz;
-            float intensity = lightData.w;
-            if (intensity > 0.01) {
-              // Use 2D horizontal distance (XZ) for cylindrical light falloff
-              vec2 toLight2D = lightPos.xz - worldPos.xz;
-              float dist = length(toLight2D);
-              float radius = uWispLightRadius;
-              if (dist > radius) continue;
-              float normalizedDist = dist / radius;
-              float attenuation = exp(-normalizedDist * 3.0);
-              attenuation *= (1.0 - normalizedDist);
-              totalLight += uWispLightColor * intensity * attenuation;
-            }
-          }
-          return totalLight;
         }
 
         void main() {
@@ -196,8 +148,8 @@ export class ProceduralFloraSystem {
           color *= ambientColor * ambientLevel;
 
           // Add dynamic lighting from fireflies and wisps
-          vec3 fireflyLight = calculateFireflyLighting(vWorldPos);
-          vec3 wispLight = calculateWispLighting(vWorldPos);
+          vec3 fireflyLight = calculateFireflyLightingSimple(vWorldPos);
+          vec3 wispLight = calculateWispLightingSimple(vWorldPos);
           color += fireflyLight * 0.5 + wispLight * 0.6;
 
           gl_FragColor = vec4(color, 1.0);
@@ -258,19 +210,13 @@ export class ProceduralFloraSystem {
         uniform vec3 uBaseColor;
         uniform float uSunBrightness;
         uniform float uDitherDistance;
-        // Dynamic lighting uniforms
-        uniform sampler2D uFireflyLights;
-        uniform int uFireflyLightCount;
-        uniform vec3 uFireflyLightColor;
-        uniform float uFireflyLightRadius;
-        uniform sampler2D uWispLights;
-        uniform int uWispLightCount;
-        uniform vec3 uWispLightColor;
-        uniform float uWispLightRadius;
 
         varying vec3 vNormal;
         varying float vCameraDist;
         varying vec3 vWorldPos;
+
+        // Dynamic lighting (shared module)
+        ${DYNAMIC_LIGHTING_SIMPLE}
 
         // 4x4 Bayer dither matrix
         float bayerDither(vec2 screenPos) {
@@ -290,49 +236,6 @@ export class ProceduralFloraSystem {
             if (i == index) return thresholds[i];
           }
           return 0.0;
-        }
-
-        vec3 calculateFireflyLighting(vec3 worldPos) {
-          vec3 totalLight = vec3(0.0);
-          float texelSize = 1.0 / float(uFireflyLightCount);
-          for (int i = 0; i < 32; i++) {
-            if (i >= uFireflyLightCount) break;
-            vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-            vec3 lightPos = lightData.xyz;
-            float intensity = lightData.w;
-            if (intensity > 0.01) {
-              vec2 toLight2D = lightPos.xz - worldPos.xz;
-              float dist = length(toLight2D);
-              float radius = uFireflyLightRadius;
-              float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
-              attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
-              totalLight += uFireflyLightColor * intensity * attenuation;
-            }
-          }
-          return totalLight;
-        }
-
-        vec3 calculateWispLighting(vec3 worldPos) {
-          vec3 totalLight = vec3(0.0);
-          float texelSize = 1.0 / float(uWispLightCount);
-          for (int i = 0; i < 40; i++) {
-            if (i >= uWispLightCount) break;
-            vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-            vec3 lightPos = lightData.xyz;
-            float intensity = lightData.w;
-            if (intensity > 0.01) {
-              // Use 2D horizontal distance (XZ) for cylindrical light falloff
-              vec2 toLight2D = lightPos.xz - worldPos.xz;
-              float dist = length(toLight2D);
-              float radius = uWispLightRadius;
-              if (dist > radius) continue;
-              float normalizedDist = dist / radius;
-              float attenuation = exp(-normalizedDist * 3.0);
-              attenuation *= (1.0 - normalizedDist);
-              totalLight += uWispLightColor * intensity * attenuation;
-            }
-          }
-          return totalLight;
         }
 
         void main() {
@@ -357,8 +260,8 @@ export class ProceduralFloraSystem {
           color *= ambientColor * ambientLevel;
 
           // Add dynamic lighting from fireflies and wisps
-          vec3 fireflyLight = calculateFireflyLighting(vWorldPos);
-          vec3 wispLight = calculateWispLighting(vWorldPos);
+          vec3 fireflyLight = calculateFireflyLightingSimple(vWorldPos);
+          vec3 wispLight = calculateWispLightingSimple(vWorldPos);
           color += fireflyLight * 0.5 + wispLight * 0.6;
 
           gl_FragColor = vec4(color, 1.0);
@@ -461,6 +364,7 @@ export class ProceduralFloraSystem {
 
   /**
    * Create a realistic deciduous tree (oak-like)
+   * Branches extend from trunk with foliage clusters at their ends
    */
   createOakTree(scale = 1) {
     const group = new THREE.Group();
@@ -479,39 +383,60 @@ export class ProceduralFloraSystem {
     trunk.position.y = trunkHeight / 2;
     group.add(trunk);
 
-    // Main branches
-    const branchCount = 3 + Math.floor(r() * 3);
-    for (let i = 0; i < branchCount; i++) {
-      const branch = this.createBranch(
-        trunkRadius * 0.4,
-        1 + r() * 1.5,
-        trunkColor.clone()
-      );
-      const angle = (i / branchCount) * Math.PI * 2 + r() * 0.5;
-      branch.position.set(
-        Math.cos(angle) * trunkRadius * 0.3,
-        trunkHeight * (0.5 + r() * 0.3),
-        Math.sin(angle) * trunkRadius * 0.3
-      );
-      branch.rotation.set(0.4 + r() * 0.4, angle, 0);
-      group.add(branch);
-    }
-
-    // Foliage clusters (multiple layered spheres)
+    // Foliage color and material (shared across all foliage)
     const foliageColor = new THREE.Color().setHSL(0.28 + r() * 0.08, 0.6, 0.25 + r() * 0.15);
     const foliageMaterial = this.createFoliageMaterial(foliageColor);
-    const foliageLayers = 4 + Math.floor(r() * 3);
 
-    for (let i = 0; i < foliageLayers; i++) {
-      const size = (1.2 + r() * 0.8) * (1 - i * 0.1);
+    // Main branches with foliage at their ends
+    const branchCount = 4 + Math.floor(r() * 3);
+    for (let i = 0; i < branchCount; i++) {
+      const angle = (i / branchCount) * Math.PI * 2 + r() * 0.5;
+      const branchLength = 0.8 + r() * 1.0;
+      const branchTilt = 0.3 + r() * 0.4; // angle from vertical
+
+      // Create branch
+      const branch = this.createBranch(
+        trunkRadius * 0.35,
+        branchLength,
+        trunkColor.clone()
+      );
+      const branchY = trunkHeight * (0.6 + r() * 0.25);
+      branch.position.set(
+        Math.cos(angle) * trunkRadius * 0.3,
+        branchY,
+        Math.sin(angle) * trunkRadius * 0.3
+      );
+      branch.rotation.set(branchTilt, angle, 0);
+      group.add(branch);
+
+      // Calculate branch end position for foliage placement
+      const branchEndX = Math.cos(angle) * trunkRadius * 0.3 + Math.sin(branchTilt) * Math.cos(angle) * branchLength;
+      const branchEndY = branchY + Math.cos(branchTilt) * branchLength;
+      const branchEndZ = Math.sin(angle) * trunkRadius * 0.3 + Math.sin(branchTilt) * Math.sin(angle) * branchLength;
+
+      // Add foliage cluster at branch end
+      const foliageSize = 0.6 + r() * 0.4;
+      const foliage = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(foliageSize, 1),
+        foliageMaterial
+      );
+      foliage.position.set(branchEndX, branchEndY, branchEndZ);
+      foliage.scale.y = 0.7 + r() * 0.3;
+      group.add(foliage);
+    }
+
+    // Central crown foliage (sits on top of trunk)
+    const crownLayers = 2 + Math.floor(r() * 2);
+    for (let i = 0; i < crownLayers; i++) {
+      const size = 0.9 + r() * 0.5;
       const foliage = new THREE.Mesh(
         new THREE.IcosahedronGeometry(size, 1),
         foliageMaterial
       );
       foliage.position.set(
-        (r() - 0.5) * 1.5,
-        trunkHeight + 0.5 + r() * 1.5,
-        (r() - 0.5) * 1.5
+        (r() - 0.5) * 0.6, // tighter cluster around center
+        trunkHeight + 0.3 + r() * 0.6,
+        (r() - 0.5) * 0.6
       );
       foliage.scale.y = 0.7 + r() * 0.3;
       group.add(foliage);
@@ -528,11 +453,13 @@ export class ProceduralFloraSystem {
     const group = new THREE.Group();
     const r = () => this.nextRandom();
 
-    // Trunk
-    const trunkHeight = 3 + r() * 2;
+    // Tree proportions
+    const treeHeight = 3 + r() * 2;
     const trunkRadius = 0.1 + r() * 0.05;
     const trunkColor = new THREE.Color().setHSL(0.06, 0.6, 0.2 + r() * 0.1);
 
+    // Trunk only extends to where foliage begins (lower third of tree)
+    const trunkHeight = treeHeight * 0.4;
     const trunk = new THREE.Mesh(
       new THREE.CylinderGeometry(trunkRadius * 0.5, trunkRadius, trunkHeight, 6),
       this.createTrunkMaterial(trunkColor)
@@ -546,7 +473,7 @@ export class ProceduralFloraSystem {
     const foliageMaterial = this.createFoliageMaterial(baseColor);
 
     for (let i = 0; i < layers; i++) {
-      const layerY = trunkHeight * 0.3 + i * (trunkHeight * 0.18);
+      const layerY = treeHeight * 0.3 + i * (treeHeight * 0.18);
       const coneRadius = (1.2 - i * 0.15) * (0.8 + r() * 0.4);
       const coneHeight = 1 + r() * 0.5;
 
@@ -558,97 +485,81 @@ export class ProceduralFloraSystem {
       group.add(cone);
     }
 
-    // Snow caps for some trees
-    if (r() > 0.6) {
-      const snow = new THREE.Mesh(
-        new THREE.ConeGeometry(0.4, 0.3, 6),
-        new THREE.MeshBasicMaterial({ color: 0xffffff })
-      );
-      snow.position.y = trunkHeight + 0.5;
-      group.add(snow);
-    }
-
     group.scale.setScalar(scale);
     return group;
   }
 
   /**
-   * Create a willow tree with drooping branches
+   * Create a weeping willow tree (stylized low-poly version)
+   * Uses tiered umbrella/pagoda shape - stacked discs getting wider toward bottom
    */
   createWillowTree(scale = 1) {
     const group = new THREE.Group();
     const r = () => this.nextRandom();
 
-    // Trunk
-    const trunkHeight = 2.5 + r() * 1.5;
+    // Trunk - willows have thick trunks
+    const trunkHeight = 1.8 + r() * 0.8;
     const trunkRadius = 0.2 + r() * 0.1;
-    const trunkColor = new THREE.Color().setHSL(0.1, 0.4, 0.28);
+    const trunkColor = new THREE.Color().setHSL(0.08, 0.4, 0.22);
 
     const trunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(trunkRadius * 0.7, trunkRadius, trunkHeight, 8),
+      new THREE.CylinderGeometry(trunkRadius * 0.6, trunkRadius, trunkHeight, 8),
       this.createTrunkMaterial(trunkColor)
     );
     trunk.position.y = trunkHeight / 2;
     group.add(trunk);
 
-    // Drooping branch tendrils
-    const tendrilCount = 15 + Math.floor(r() * 10);
-    const foliageColor = new THREE.Color().setHSL(0.25 + r() * 0.1, 0.55, 0.3);
+    // Slightly different green for willows - more yellow-green
+    const foliageColor = new THREE.Color().setHSL(0.24 + r() * 0.04, 0.5, 0.32);
     const foliageMaterial = this.createFoliageMaterial(foliageColor);
 
-    for (let i = 0; i < tendrilCount; i++) {
-      const angle = (i / tendrilCount) * Math.PI * 2 + r() * 0.3;
-      const radius = 1 + r() * 1;
-      const length = 1.5 + r() * 2;
+    // Tiered umbrella structure - each tier is wider and lower
+    const tiers = 4 + Math.floor(r() * 2);
+    const topRadius = 0.5 + r() * 0.3;
+    const radiusGrowth = 0.4 + r() * 0.2; // how much wider each tier gets
+    const tierSpacing = 0.5 + r() * 0.2;
 
-      // Create curved tendril using multiple segments
-      const tendril = new THREE.Group();
-      const segments = 5;
+    for (let t = 0; t < tiers; t++) {
+      const tierRadius = topRadius + t * radiusGrowth;
+      const tierY = trunkHeight + 0.3 - t * tierSpacing;
+      const tierThickness = 0.3 + r() * 0.15;
 
-      for (let s = 0; s < segments; s++) {
-        const seg = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.02, 0.03, length / segments, 4),
-          foliageMaterial
-        );
-        seg.position.y = -s * (length / segments) * 0.8;
-        seg.position.x = s * 0.1;
-        seg.rotation.z = s * 0.15;
-        tendril.add(seg);
-
-        // Add leaf clusters along tendril
-        if (s > 0) {
-          const leafCluster = new THREE.Mesh(
-            new THREE.SphereGeometry(0.15 + r() * 0.1, 4, 4),
-            foliageMaterial
-          );
-          leafCluster.position.copy(seg.position);
-          tendril.add(leafCluster);
-        }
-      }
-
-      tendril.position.set(
-        Math.cos(angle) * radius,
-        trunkHeight + r() * 0.5,
-        Math.sin(angle) * radius
-      );
-      tendril.rotation.x = 0.3;
-      tendril.rotation.y = angle;
-      group.add(tendril);
-    }
-
-    // Central foliage mass
-    for (let i = 0; i < 5; i++) {
-      const mass = new THREE.Mesh(
-        new THREE.SphereGeometry(0.8 + r() * 0.5, 6, 6),
+      // Main tier disc (flattened sphere)
+      const tier = new THREE.Mesh(
+        new THREE.SphereGeometry(tierRadius, 8, 4),
         foliageMaterial
       );
-      mass.position.set(
-        (r() - 0.5) * 1.5,
-        trunkHeight + r() * 0.5,
-        (r() - 0.5) * 1.5
-      );
-      group.add(mass);
+      tier.position.set((r() - 0.5) * 0.2, tierY, (r() - 0.5) * 0.2);
+      tier.scale.set(1, tierThickness / tierRadius, 1); // flatten into disc
+      group.add(tier);
+
+      // Add some irregular bumps around each tier for organic look
+      const bumpCount = 4 + Math.floor(r() * 3);
+      for (let b = 0; b < bumpCount; b++) {
+        const angle = (b / bumpCount) * Math.PI * 2 + r() * 0.5;
+        const bumpSize = 0.25 + r() * 0.2;
+        const bump = new THREE.Mesh(
+          new THREE.IcosahedronGeometry(bumpSize, 0),
+          foliageMaterial
+        );
+        bump.position.set(
+          Math.cos(angle) * tierRadius * 0.8,
+          tierY - tierThickness * 0.3,
+          Math.sin(angle) * tierRadius * 0.8
+        );
+        bump.scale.y = 0.6; // flatten bumps too
+        group.add(bump);
+      }
     }
+
+    // Small crown at top
+    const crown = new THREE.Mesh(
+      new THREE.IcosahedronGeometry(topRadius * 0.8, 1),
+      foliageMaterial
+    );
+    crown.position.set(0, trunkHeight + 0.5, 0);
+    crown.scale.y = 0.7;
+    group.add(crown);
 
     group.scale.setScalar(scale);
     return group;

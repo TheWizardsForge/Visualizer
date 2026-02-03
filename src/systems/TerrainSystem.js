@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GPUHeightSampler } from './GPUHeightSampler.js';
 import { NOISE_FUNCTIONS, TERRAIN_HEIGHT_FUNCTION } from '../shaders/terrainNoise.glsl.js';
+import { DYNAMIC_LIGHTING_COMPLETE } from '../glsl/lighting/dynamic.glsl.js';
 
 /**
  * TerrainSystem - Handles terrain generation, biomes, and terrain-related features
@@ -241,83 +242,8 @@ export class TerrainSystem {
         #endif
       #endif
 
-      // Firefly dynamic lighting
-      uniform sampler2D uFireflyLights;
-      uniform int uFireflyLightCount;
-      uniform vec3 uFireflyLightColor;
-      uniform float uFireflyLightRadius;
-
-      vec3 calculateFireflyLighting(vec3 worldPos, vec3 normal) {
-        vec3 totalLight = vec3(0.0);
-        float texelSize = 1.0 / float(uFireflyLightCount);
-
-        for (int i = 0; i < 32; i++) {
-          if (i >= uFireflyLightCount) break;
-
-          vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-          vec3 lightPos = lightData.xyz;
-          float intensity = lightData.w;
-
-          if (intensity > 0.01) {
-            // Use 2D horizontal distance (XZ) for ground illumination
-            vec2 toLight2D = lightPos.xz - worldPos.xz;
-            float dist = length(toLight2D);
-
-            // Soft attenuation - inverse square with cutoff
-            float radius = uFireflyLightRadius;
-            float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
-            attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
-
-            // Simplified diffuse for overhead light casting down
-            float diffuse = 0.6 + 0.4 * max(0.0, normal.y);
-
-            totalLight += uFireflyLightColor * intensity * attenuation * diffuse;
-          }
-        }
-
-        return totalLight;
-      }
-
-      // Wisp dynamic lighting
-      uniform sampler2D uWispLights;
-      uniform int uWispLightCount;
-      uniform vec3 uWispLightColor;
-      uniform float uWispLightRadius;
-
-      vec3 calculateWispLighting(vec3 worldPos, vec3 normal) {
-        vec3 totalLight = vec3(0.0);
-        float texelSize = 1.0 / float(uWispLightCount);
-
-        for (int i = 0; i < 40; i++) {
-          if (i >= uWispLightCount) break;
-
-          vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
-          vec3 lightPos = lightData.xyz;
-          float intensity = lightData.w;
-
-          if (intensity > 0.01) {
-            // Use 2D horizontal distance (XZ) for cylindrical light falloff
-            vec2 toLight2D = lightPos.xz - worldPos.xz;
-            float dist = length(toLight2D);
-
-            // Hard cutoff at radius - no light beyond this
-            float radius = uWispLightRadius;
-            if (dist > radius) continue;
-
-            // Exponential falloff for concentrated glow
-            float normalizedDist = dist / radius;
-            float attenuation = exp(-normalizedDist * 3.0);
-            attenuation *= (1.0 - normalizedDist);
-
-            // Simplified diffuse for overhead light casting down
-            float diffuse = 0.6 + 0.4 * max(0.0, normal.y);
-
-            totalLight += uWispLightColor * intensity * attenuation * diffuse;
-          }
-        }
-
-        return totalLight;
-      }
+      // Dynamic lighting (shared module)
+      ${DYNAMIC_LIGHTING_COMPLETE}
 
       float hash(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);

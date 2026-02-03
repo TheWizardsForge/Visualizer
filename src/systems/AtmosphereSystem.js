@@ -148,6 +148,7 @@ export class AtmosphereSystem {
       scanlines: config.scanlines ?? 0.0,
       chromaticAberration: config.chromaticAberration ?? 0.0,
       vignette: config.vignette ?? 0.0,
+      glitchEnabled: config.glitchEnabled ?? true, // Auto-glitch effect (disabled for forest/natural realms)
       ...config
     };
 
@@ -513,6 +514,14 @@ export class AtmosphereSystem {
   }
 
   updateGlitch(delta) {
+    // Skip auto-glitch if disabled (e.g., for forest/natural realms)
+    if (!this.config.glitchEnabled) {
+      if (this.retroPass) {
+        this.retroPass.uniforms.uGlitch.value = 0;
+      }
+      return;
+    }
+
     this.glitchTimer += delta;
 
     if (!this.glitchActive && this.glitchTimer > 10 + Math.random() * 30) {

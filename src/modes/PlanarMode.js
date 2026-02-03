@@ -1,15 +1,20 @@
 import * as THREE from 'three';
 import { BaseMode } from './BaseMode.js';
-import { TerrainSystem } from '../systems/TerrainSystem.js';
-import { SkySystem } from '../systems/SkySystem.js';
-import { AtmosphereSystem } from '../systems/AtmosphereSystem.js';
-import { CameraSystem } from '../systems/CameraSystem.js';
-import { FloraSystem } from '../systems/FloraSystem.js';
-import { FaunaSystem } from '../systems/FaunaSystem.js';
-import { GrassSystem } from '../systems/GrassSystem.js';
-import { FireflySystem } from '../systems/FireflySystem.js';
-import { WispSystem } from '../systems/WispSystem.js';
-import { SimplexNoise } from '../systems/SimplexNoise.js';
+
+// Unified Architecture
+import { WorldContext, SystemManager } from '../core/index.js';
+import { LightManager } from '../lights/index.js';
+import {
+  AtmosphereAdapter,
+  TerrainAdapter,
+  GrassAdapter,
+  FloraAdapter,
+  FaunaAdapter,
+  FireflyAdapter,
+  WispAdapter,
+  SkyAdapter,
+  CameraAdapter
+} from '../systems/adapters/index.js';
 
 /**
  * PlanarMode - Orchestrates multiple visual systems to create realm experiences
@@ -70,7 +75,7 @@ export class PlanarMode extends BaseMode {
     this.realmTransitioning = false;
     this.realmTransitionProgress = 0;
 
-    // Systems will be initialized in setupScene
+    // System references (populated by adapters via SystemManager)
     this.terrainSystem = null;
     this.skySystem = null;
     this.atmosphereSystem = null;
@@ -81,161 +86,12 @@ export class PlanarMode extends BaseMode {
     this.fireflySystem = null;
     this.wispSystem = null;
 
+    // Unified Architecture components
+    this.context = null;
+    this.systemManager = null;
+    this.lightManager = null;
+
     this.setupScene();
-  }
-
-  setupScene() {
-    // Setup camera
-    this.camera = new THREE.PerspectiveCamera(
-      this.params.fov,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      2000
-    );
-    this.camera.position.set(0, 2, 0);
-
-    // Get realm configuration
-    const realmConfig = this.getRealmConfig(this.currentRealm);
-
-    // Initialize Terrain System (use quality settings for segments)
-    this.terrainSystem = new TerrainSystem(this.scene, {
-      seed: this.currentSeed,
-      terrainScale: realmConfig.terrainScale || this.params.terrainScale,
-      terrainHeight: realmConfig.terrainHeight || this.params.terrainHeight,
-      terrainSegments: this.qualitySettings.terrainSegments,
-      biomes: realmConfig.biomes,
-      biomeCount: realmConfig.biomeCount || 15,
-      biomeCycleSpeed: realmConfig.biomeCycleSpeed || 0.0001,
-      alienVeins: realmConfig.alienVeins ?? 1.0,
-      grassShadows: realmConfig.grassShadows ?? 0.0
-    });
-    this.terrainSystem.create();
-    this.terrainSystem.initHeightSampler(this.renderer);
-
-    // Initialize Flora System
-    this.floraSystem = new FloraSystem(this.scene, this.terrainSystem, {
-      enabled: this.params.floraEnabled,
-      floraTypes: realmConfig.floraTypes || undefined,
-      sporeCount: realmConfig.sporeCount || 300
-    });
-    this.floraSystem.create();
-
-    // Initialize Fauna System with realm-specific creatures
-    this.faunaSystem = new FaunaSystem(this.scene, this.terrainSystem, {
-      enabled: this.params.faunaEnabled,
-      faunaTypes: realmConfig.faunaTypes || undefined
-    });
-    this.faunaSystem.create();
-
-    // Initialize Grass System for terrestrial realms (use quality settings)
-    this.grassSystem = new GrassSystem(this.scene, this.terrainSystem, {
-      enabled: realmConfig.grassEnabled ?? false,
-      instanceCount: Math.min(realmConfig.grassDensity ?? 50000, this.qualitySettings.grassCount),
-      grassColor: realmConfig.grassColor ? new THREE.Color(realmConfig.grassColor) : new THREE.Color(0.1, 0.4, 0.05),
-      clutterEnabled: realmConfig.clutterEnabled ?? false,
-      clutterDensity: Math.min(realmConfig.clutterDensity ?? 100, this.qualitySettings.clutterDensity)
-    });
-    this.grassSystem.create();
-
-    // Initialize Firefly System for night-time ambiance
-    // Fireflies glow visually but cast minimal ground light (wisps are the main light source)
-    this.fireflySystem = new FireflySystem(this.scene, {
-      count: realmConfig.fireflyCount ?? 300,
-      areaSize: 80,
-      minHeight: 0.5,
-      maxHeight: 6,
-      baseColor: realmConfig.fireflyColor ? new THREE.Color(realmConfig.fireflyColor) : new THREE.Color(0.9, 0.95, 0.3),
-      intensity: realmConfig.fireflyIntensity ?? 1.2,
-      lightRadius: 1.5,        // Tiny glow
-      lightIntensity: 0.03,    // Nearly invisible ground light
-      nightOnly: true
-    });
-    this.fireflySystem.setTerrainSystem(this.terrainSystem);
-
-    // Connect firefly lighting to terrain, grass, and flora
-    const fireflyLightTexture = this.fireflySystem.getLightDataTexture();
-    const fireflyColor = this.fireflySystem.config.baseColor;
-    const fireflyRadius = this.fireflySystem.config.lightRadius;
-    this.terrainSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
-    this.grassSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
-    if (this.floraSystem) {
-      this.floraSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
-    }
-
-    // Initialize Wisp System for dramatic night illumination
-    this.wispSystem = new WispSystem(this.scene, {
-      count: realmConfig.wispCount ?? 40,
-      maxLights: realmConfig.wispCount ?? 40,
-      areaSize: 100,
-      minHeight: 1.5,
-      maxHeight: 10,
-      baseColor: realmConfig.wispColor ? new THREE.Color(realmConfig.wispColor) : new THREE.Color(1.0, 0.6, 0.2),
-      coreColor: new THREE.Color(1.0, 0.9, 0.6),
-      intensity: realmConfig.wispIntensity ?? 2.0,
-      lightRadius: 15.0,       // Large spherical glow to handle Y variation
-      lightIntensity: 0.5,     // Visible pools of light
-      nightOnly: true
-    });
-    this.wispSystem.setTerrainSystem(this.terrainSystem);
-
-    // Connect wisp lighting to terrain, grass, and flora
-    const wispLightTexture = this.wispSystem.getLightDataTexture();
-    const wispColor = this.wispSystem.config.baseColor;
-    const wispRadius = this.wispSystem.config.lightRadius;
-    this.terrainSystem.setWispLights(wispLightTexture, wispColor, wispRadius);
-    this.grassSystem.setWispLights(wispLightTexture, wispColor, wispRadius);
-    if (this.floraSystem) {
-      this.floraSystem.setWispLights(wispLightTexture, wispColor, wispRadius);
-    }
-
-    // Initialize Sky System with realm-specific settings
-    this.skySystem = new SkySystem(this.scene, {
-      seed: this.currentSeed,
-      starDensity: realmConfig.starDensity ?? this.params.starDensity,
-      nebulaIntensity: realmConfig.nebulaIntensity ?? this.params.nebulaIntensity,
-      moonCount: realmConfig.moonCount ?? 6,
-      showGasPlanet: realmConfig.showGasPlanet ?? true,
-      showAurora: realmConfig.showAurora ?? true,
-      showPulsars: realmConfig.showPulsars ?? true,
-      skyType: realmConfig.skyType || 'space'
-    });
-    this.skySystem.create();
-
-    // Initialize Atmosphere System with realm-specific settings
-    this.atmosphereSystem = new AtmosphereSystem(
-      this.scene,
-      this.camera,
-      this.renderer,
-      {
-        fogDensity: realmConfig.fogDensity || this.params.fogDensity,
-        fogColor: realmConfig.fogColor || 0x0a0a15,
-        bloomStrength: realmConfig.bloomStrength ?? this.params.bloomStrength,
-        bloomRadius: realmConfig.bloomRadius ?? this.params.bloomRadius,
-        bloomThreshold: this.params.bloomThreshold,
-        scanlines: this.params.scanlines,
-        chromaticAberration: this.params.chromaticAberration,
-        vignette: this.params.vignette,
-        skyColor: realmConfig.skyColor || 0x000008
-      }
-    );
-    this.atmosphereSystem.create();
-    this.atmosphereSystem.dayNightSpeed = this.dayNightSpeed;
-
-    // Apply realm-specific atmosphere effects
-    if (realmConfig.underwaterAlways) {
-      this.atmosphereSystem.setUnderwater(true, realmConfig.underwaterDepth || 0.5);
-    } else {
-      this.atmosphereSystem.setUnderwater(false, 0);
-    }
-
-    // Initialize Camera System
-    this.cameraSystem = new CameraSystem(this.camera, this.terrainSystem, {
-      fov: this.params.fov,
-      cameraHeight: this.params.cameraHeight
-    });
-
-    // Create ambient particles
-    this.createAmbientParticles();
   }
 
   getRealmConfig(realmName) {
@@ -275,6 +131,7 @@ export class PlanarMode extends BaseMode {
         bloomRadius: 0.2,
         underwaterAlways: false,
         heatDistortion: false,
+        glitchEnabled: false, // No glitch for natural forest realm
         // Grass & ground cover
         grassEnabled: true,
         grassDensity: 60000,
@@ -372,6 +229,7 @@ export class PlanarMode extends BaseMode {
         underwaterAlways: true,
         underwaterDepth: 0.8,
         heatDistortion: false,
+        glitchEnabled: false, // No glitch for underwater realm
         // Flora - deep sea with procedural abyssal tendrils and coral
         floraTypes: {
           0: 'abyssalTendril',  // Bioluminescent deep tendrils
@@ -419,6 +277,7 @@ export class PlanarMode extends BaseMode {
         bloomRadius: 0.4,
         underwaterAlways: false,
         heatDistortion: false,
+        glitchEnabled: false, // No glitch for magical forest realm
         oversaturated: true,
         // Grass - magical purple/teal tinted grass
         grassEnabled: true,
@@ -473,6 +332,7 @@ export class PlanarMode extends BaseMode {
         bloomRadius: 0.2,
         underwaterAlways: false,
         heatDistortion: false,
+        glitchEnabled: false, // No glitch for floating islands realm
         floatingIslands: true,
         // Flora - ethereal floating island flora
         floraTypes: {
@@ -564,6 +424,179 @@ export class PlanarMode extends BaseMode {
     this.scene.add(this.ambientParticles);
   }
 
+  /**
+   * Setup scene using the unified architecture (WorldContext, SystemManager, LightManager)
+   */
+  setupScene() {
+    // Setup camera
+    this.camera = new THREE.PerspectiveCamera(
+      this.params.fov,
+      window.innerWidth / window.innerHeight,
+      0.1,
+      2000
+    );
+    this.camera.position.set(0, 2, 0);
+
+    // Get realm configuration
+    const realmConfig = this.getRealmConfig(this.currentRealm);
+
+    // Create WorldContext - single source of truth for shared state
+    this.context = new WorldContext();
+    this.context.setQuality(this.qualitySettings);
+    this.context.setRealm(this.currentRealm);
+
+    // Create LightManager - central registry for dynamic lights
+    this.lightManager = new LightManager();
+    this.context.lightManager = this.lightManager;
+
+    // Create SystemManager - handles lifecycle and dependencies
+    this.systemManager = new SystemManager(this.context);
+
+    // Register systems with dependencies
+    // Order matters: systems are updated in dependency order
+
+    // 1. Terrain (no dependencies, other systems need it)
+    const terrainAdapter = new TerrainAdapter(this.scene, this.context, {
+      renderer: this.renderer,  // Needed for height sampler initialization
+      seed: this.currentSeed,
+      terrainScale: realmConfig.terrainScale || this.params.terrainScale,
+      terrainHeight: realmConfig.terrainHeight || this.params.terrainHeight,
+      terrainSegments: this.qualitySettings.terrainSegments,
+      biomes: realmConfig.biomes,
+      biomeCount: realmConfig.biomeCount || 15,
+      biomeCycleSpeed: realmConfig.biomeCycleSpeed || 0.0001,
+      alienVeins: realmConfig.alienVeins ?? 1.0,
+      grassShadows: realmConfig.grassShadows ?? 0.0
+    });
+    this.systemManager.register('terrain', terrainAdapter);
+
+    // 2. Atmosphere (depends on nothing, provides sunBrightness)
+    const atmosphereAdapter = new AtmosphereAdapter(this.scene, this.context, {
+      camera: this.camera,
+      renderer: this.renderer,
+      fogDensity: realmConfig.fogDensity || this.params.fogDensity,
+      fogColor: realmConfig.fogColor || 0x0a0a15,
+      nightFogColor: realmConfig.nightFogColor || null,
+      skyColor: realmConfig.skyColor || 0x000008,
+      nightSkyColor: realmConfig.nightSkyColor || null,
+      bloomStrength: realmConfig.bloomStrength ?? this.params.bloomStrength,
+      bloomRadius: realmConfig.bloomRadius ?? this.params.bloomRadius,
+      bloomThreshold: this.params.bloomThreshold,
+      scanlines: this.params.scanlines,
+      chromaticAberration: this.params.chromaticAberration,
+      vignette: this.params.vignette,
+      dayNightSpeed: this.dayNightSpeed,
+      weatherEnabled: this.params.weatherEnabled,
+      underwaterAlways: realmConfig.underwaterAlways,
+      underwaterDepth: realmConfig.underwaterDepth,
+      glitchEnabled: realmConfig.glitchEnabled ?? true
+    });
+    this.systemManager.register('atmosphere', atmosphereAdapter);
+
+    // 3. Sky (depends on atmosphere for day/night)
+    const skyAdapter = new SkyAdapter(this.scene, this.context, {
+      seed: this.currentSeed,
+      starDensity: realmConfig.starDensity ?? this.params.starDensity,
+      nebulaIntensity: realmConfig.nebulaIntensity ?? this.params.nebulaIntensity,
+      moonCount: realmConfig.moonCount ?? 6,
+      showGasPlanet: realmConfig.showGasPlanet ?? true,
+      showAurora: realmConfig.showAurora ?? true,
+      showPulsars: realmConfig.showPulsars ?? true,
+      skyType: realmConfig.skyType || 'space'
+    });
+    this.systemManager.register('sky', skyAdapter, ['atmosphere']);
+
+    // 4. Flora (depends on terrain)
+    const floraAdapter = new FloraAdapter(this.scene, this.context, {
+      enabled: this.params.floraEnabled,
+      floraTypes: realmConfig.floraTypes,
+      sporeCount: realmConfig.sporeCount || 300
+    });
+    this.systemManager.register('flora', floraAdapter, ['terrain']);
+
+    // 5. Grass (depends on terrain)
+    const grassAdapter = new GrassAdapter(this.scene, this.context, {
+      enabled: realmConfig.grassEnabled ?? false,
+      instanceCount: Math.min(realmConfig.grassDensity ?? 50000, this.qualitySettings.grassCount),
+      grassColor: realmConfig.grassColor ? new THREE.Color(realmConfig.grassColor) : new THREE.Color(0.1, 0.4, 0.05),
+      clutterEnabled: realmConfig.clutterEnabled ?? false,
+      clutterDensity: Math.min(realmConfig.clutterDensity ?? 100, this.qualitySettings.clutterDensity)
+    });
+    this.systemManager.register('grass', grassAdapter, ['terrain']);
+
+    // 6. Fauna (depends on terrain)
+    const faunaAdapter = new FaunaAdapter(this.scene, this.context, {
+      enabled: this.params.faunaEnabled,
+      faunaTypes: realmConfig.faunaTypes
+    });
+    this.systemManager.register('fauna', faunaAdapter, ['terrain']);
+
+    // 7. Firefly (depends on terrain, atmosphere for night check)
+    const fireflyAdapter = new FireflyAdapter(this.scene, this.context, {
+      count: realmConfig.fireflyCount ?? 300,
+      areaSize: 80,
+      minHeight: 0.5,
+      maxHeight: 6,
+      baseColor: realmConfig.fireflyColor ? new THREE.Color(realmConfig.fireflyColor) : new THREE.Color(0.9, 0.95, 0.3),
+      intensity: realmConfig.fireflyIntensity ?? 1.2,
+      lightRadius: 1.5,
+      lightIntensity: 0.03,
+      nightOnly: true
+    });
+    this.systemManager.register('firefly', fireflyAdapter, ['terrain', 'atmosphere']);
+
+    // 8. Wisp (depends on terrain, atmosphere)
+    const wispAdapter = new WispAdapter(this.scene, this.context, {
+      count: realmConfig.wispCount ?? 40,
+      maxLights: realmConfig.wispCount ?? 40,
+      areaSize: 100,
+      minHeight: 1.5,
+      maxHeight: 10,
+      baseColor: realmConfig.wispColor ? new THREE.Color(realmConfig.wispColor) : new THREE.Color(1.0, 0.6, 0.2),
+      coreColor: new THREE.Color(1.0, 0.9, 0.6),
+      intensity: realmConfig.wispIntensity ?? 2.0,
+      lightRadius: 15.0,
+      lightIntensity: 0.5,
+      nightOnly: true
+    });
+    this.systemManager.register('wisp', wispAdapter, ['terrain', 'atmosphere']);
+
+    // 9. Camera (depends on terrain)
+    const cameraAdapter = new CameraAdapter(this.scene, this.context, {
+      camera: this.camera,
+      fov: this.params.fov,
+      cameraHeight: this.params.cameraHeight
+    });
+    this.systemManager.register('camera', cameraAdapter, ['terrain']);
+
+    // Initialize all systems
+    this.systemManager.createAll();
+    this.systemManager.initAll(this.renderer);
+
+    // Store references for backward compatibility
+    this.terrainSystem = this.systemManager.get('terrain');
+    this.atmosphereSystem = this.systemManager.get('atmosphere');
+    this.skySystem = this.systemManager.get('sky');
+    this.floraSystem = this.systemManager.get('flora');
+    this.grassSystem = this.systemManager.get('grass');
+    this.faunaSystem = this.systemManager.get('fauna');
+    this.fireflySystem = this.systemManager.get('firefly');
+    this.wispSystem = this.systemManager.get('wisp');
+    this.cameraSystem = this.systemManager.get('camera');
+
+    // Apply realm-specific atmosphere effects
+    if (realmConfig.underwaterAlways) {
+      this.atmosphereSystem.setUnderwater(true, realmConfig.underwaterDepth || 0.5);
+    }
+
+    // Create ambient particles
+    this.createAmbientParticles();
+
+    // Debug output
+    console.log('Unified Architecture initialized');
+    this.systemManager.debugPrintOrder();
+  }
+
   switchRealm(realmName) {
     if (this.realmTransitioning || realmName === this.currentRealm) return;
 
@@ -574,68 +607,40 @@ export class PlanarMode extends BaseMode {
     // Fade out, switch, fade in will be handled in update
   }
 
+  /**
+   * Update all systems via WorldContext and SystemManager
+   */
   update(delta, elapsed, audioData) {
     this.time = elapsed;
     const speed = this.params.speed * delta * 10;
     this.roverPosition.z -= speed;
 
-    // Tree trunk avoidance - plan smooth path ahead
+    // Tree trunk avoidance (same as legacy)
     if (this.treeAvoidanceEnabled && this.floraSystem) {
-      // Get all flora in the path ahead
-      const nearbyFlora = this.floraSystem.getFloraInPath(
-        3,                    // minZ: slightly behind (catch trees we're passing)
-        -this.pathLookAhead,  // maxZ: look ahead distance
-        15,                   // xRange: check 15 units left and right
-        1.2                   // trunkRadius: base trunk size with margin
-      );
-
-      // Find the best lane to drive in by scoring different X positions
-      // Sample potential positions from -10 to +10
+      const nearbyFlora = this.floraSystem.getFloraInPath(3, -this.pathLookAhead, 15, 1.2);
       let bestX = 0;
       let bestScore = -Infinity;
-      const laneWidth = 2.5; // Minimum clearance needed
+      const laneWidth = 2.5;
 
       for (let testX = -12; testX <= 12; testX += 1.5) {
-        let score = 0;
-
-        // Prefer staying near center (slight bias)
-        score -= Math.abs(testX) * 0.1;
-
-        // Prefer staying near current position (smooth path)
-        score -= Math.abs(testX - this.roverPosition.x) * 0.3;
-
-        // Check for obstacles along this lane
+        let score = -Math.abs(testX) * 0.1 - Math.abs(testX - this.roverPosition.x) * 0.3;
         for (const flora of nearbyFlora) {
-          // Only consider flora in front of us
           if (flora.z < 3 && flora.z > -this.pathLookAhead) {
-            const dx = testX - flora.x;
-            const distFromLane = Math.abs(dx);
-            const distAhead = Math.abs(flora.z);
-
-            // How close is this obstacle to our test lane?
+            const distFromLane = Math.abs(testX - flora.x);
             if (distFromLane < laneWidth + flora.radius) {
-              // Obstacle blocks this lane - big penalty, worse if closer
-              const proximityPenalty = (1.0 - distAhead / this.pathLookAhead);
-              const blockPenalty = (laneWidth + flora.radius - distFromLane) * 5;
-              score -= blockPenalty * (1 + proximityPenalty * 2);
+              const proximityPenalty = (1.0 - Math.abs(flora.z) / this.pathLookAhead);
+              score -= (laneWidth + flora.radius - distFromLane) * 5 * (1 + proximityPenalty * 2);
             }
           }
         }
-
         if (score > bestScore) {
           bestScore = score;
           bestX = testX;
         }
       }
 
-      // Smoothly update target position (gradual but responsive enough to avoid trees)
       this.roverTargetX += (bestX - this.roverTargetX) * Math.min(1, delta * 0.8);
-
-      // Smoothly steer toward target (relaxed but effective)
-      const steerAmount = (this.roverTargetX - this.roverPosition.x) * this.steeringSmoothness * delta;
-      this.roverPosition.x += steerAmount;
-
-      // Clamp lateral movement
+      this.roverPosition.x += (this.roverTargetX - this.roverPosition.x) * this.steeringSmoothness * delta;
       this.roverPosition.x = Math.max(-12, Math.min(12, this.roverPosition.x));
     }
 
@@ -649,89 +654,35 @@ export class PlanarMode extends BaseMode {
       }
     }
 
-    // Calculate ambient light based on sun (for night darkening)
-    const sunBrightness = this.atmosphereSystem.sunBrightness;
-    const ambientLevel = 0.15 + sunBrightness * 0.85; // 0.15 at night, 1.0 at noon
+    // Update WorldContext with current state
+    this.context.update(delta, elapsed, audioData);
+    this.context.setRoverPosition(this.roverPosition.x, this.roverPosition.z, speed);
 
-    // Reuse cached color object to avoid allocations
+    // Sync day/night settings TO atmosphere system (allows GUI control)
+    if (this.atmosphereSystem) {
+      this.atmosphereSystem.dayNightCycle = this.dayNightCycle;
+      this.atmosphereSystem.dayNightSpeed = this.dayNightSpeed;
+    }
+
+    // Update all systems via SystemManager (automatic dependency ordering)
+    this.systemManager.update();
+
+    // Sync day/night cycle back from atmosphere system (for display)
+    this.dayNightCycle = this.context.dayNightCycle;
+    this.timeOfDay = this.dayNightCycle * 24;
+
+    // Apply night tint to terrain (same as legacy)
+    const sunBrightness = this.context.sunBrightness;
+    const ambientLevel = 0.15 + sunBrightness * 0.85;
     if (!this._nightTint) this._nightTint = new THREE.Color();
     this._nightTint.setRGB(
-      ambientLevel * (0.7 + sunBrightness * 0.3), // Slightly blue at night
+      ambientLevel * (0.7 + sunBrightness * 0.3),
       ambientLevel * (0.7 + sunBrightness * 0.3),
       ambientLevel * (0.8 + sunBrightness * 0.2)
     );
-    const nightTint = this._nightTint;
-
-    // Update terrain with day/night tint
-    this.terrainSystem.update(delta, elapsed, audioData, this.roverPosition.z);
-    if (this.terrainSystem.terrain?.material?.uniforms?.uWeatherTint) {
-      this.terrainSystem.terrain.material.uniforms.uWeatherTint.value.copy(nightTint);
+    if (this.terrainSystem?.terrain?.material?.uniforms?.uWeatherTint) {
+      this.terrainSystem.terrain.material.uniforms.uWeatherTint.value.copy(this._nightTint);
     }
-
-    // Update sky (pass day/night cycle for terrestrial skies)
-    this.skySystem.update(delta, elapsed, audioData, this.dayNightCycle);
-
-    // Update atmosphere (weather, day/night, post-processing)
-    this.atmosphereSystem.dayNightCycle = this.dayNightCycle;
-    this.atmosphereSystem.dayNightSpeed = this.dayNightSpeed;
-    if (this.params.weatherEnabled) {
-      this.atmosphereSystem.update(delta, elapsed, audioData);
-    } else {
-      this.atmosphereSystem.updateDayNight(delta);
-      this.atmosphereSystem.updateGlitch(delta);
-    }
-
-    // Update camera (with rover X for tree avoidance)
-    this.cameraSystem.update(
-      delta,
-      elapsed,
-      this.roverPosition.z,
-      this.terrainSystem.terrain.position.y,
-      this.roverPosition.x
-    );
-
-    // Update flora (pass sun brightness for foliage lighting)
-    if (this.params.floraEnabled && this.floraSystem) {
-      this.floraSystem.update(delta, elapsed, audioData, this.roverPosition.z, this.atmosphereSystem.sunBrightness);
-    }
-
-    // Update grass (pass sun brightness for shadow intensity)
-    if (this.grassSystem) {
-      this.grassSystem.update(delta, elapsed, audioData, this.roverPosition.z, this.atmosphereSystem.sunBrightness);
-    }
-
-    // Update fauna
-    if (this.params.faunaEnabled && this.faunaSystem) {
-      this.faunaSystem.update(delta, elapsed, audioData, this.roverPosition.z, this.terrainSystem.terrain.position.y);
-    }
-
-    // Update fireflies (night-time dynamic lighting)
-    if (this.fireflySystem) {
-      this.fireflySystem.update(
-        delta,
-        elapsed,
-        this.roverPosition.z,
-        this.terrainSystem.terrain.position.y,
-        this.atmosphereSystem.sunBrightness,
-        audioData
-      );
-    }
-
-    // Update wisps (larger night illumination)
-    if (this.wispSystem) {
-      this.wispSystem.update(
-        delta,
-        elapsed,
-        this.roverPosition.z,
-        this.terrainSystem.terrain.position.y,
-        this.atmosphereSystem.sunBrightness,
-        audioData
-      );
-    }
-
-    // Update day/night cycle
-    this.dayNightCycle = this.atmosphereSystem.dayNightCycle;
-    this.timeOfDay = this.dayNightCycle * 24; // Sync for GUI display
 
     // Update ambient particles
     if (this.ambientParticles) {
@@ -743,120 +694,52 @@ export class PlanarMode extends BaseMode {
       this.ambientParticles.geometry.attributes.position.needsUpdate = true;
     }
 
-    // Sync sky aurora intensity with day/night
-    // Using -cos so: 0=midnight(-1), 0.25=sunrise(0), 0.5=noon(1), 0.75=sunset(0)
+    // Sync sky effects with day/night
     const sunHeight = -Math.cos(this.dayNightCycle * Math.PI * 2);
-    const auroraIntensity = Math.max(0, -sunHeight + 0.3);
-    this.skySystem.setAuroraIntensity(auroraIntensity);
-
-    // Nebula visibility
+    this.skySystem?.setAuroraIntensity(Math.max(0, -sunHeight + 0.3));
     const baseIntensity = this.params.nebulaIntensity;
     const nightBoost = Math.max(0, -sunHeight) * 0.5;
-    this.skySystem.setNebulaIntensity(baseIntensity * (0.5 + nightBoost + (sunHeight < 0 ? 0.5 : 0)));
+    this.skySystem?.setNebulaIntensity(baseIntensity * (0.5 + nightBoost + (sunHeight < 0 ? 0.5 : 0)));
   }
 
   rebuildForRealm(realmName) {
-    const config = this.getRealmConfig(realmName);
+    console.log('Rebuilding scene for realm:', realmName);
 
-    // Update terrain with new biomes and settings
-    this.terrainSystem.config.biomes = config.biomes || this.terrainSystem.getDefaultBiomes();
-    this.terrainSystem.config.biomeCount = config.biomeCount || 15;
-    this.terrainSystem.config.biomeCycleSpeed = config.biomeCycleSpeed || 0.0001;
-    this.terrainSystem.config.terrainHeight = config.terrainHeight || 35;
-    this.terrainSystem.config.terrainScale = config.terrainScale || 0.0005;
+    // Full scene rebuild via SystemManager
+    // Preserve current position and time state
+    const preservedState = {
+      roverX: this.roverPosition.x,
+      roverZ: this.roverPosition.z,
+      dayNightCycle: this.dayNightCycle,
+      dayNightSpeed: this.dayNightSpeed
+    };
 
-    // Rebuild flora for new realm
-    if (this.floraSystem) {
-      this.floraSystem.dispose();
-      this.floraSystem = new FloraSystem(this.scene, this.terrainSystem, {
-        enabled: this.params.floraEnabled,
-        floraTypes: config.floraTypes || undefined,
-        sporeCount: config.sporeCount || 300
-      });
-      this.floraSystem.create();
+    // Dispose all systems
+    if (this.systemManager) {
+      this.systemManager.disposeAll();
+    }
+    if (this.lightManager) {
+      this.lightManager.dispose();
+    }
+    if (this.ambientParticles) {
+      this.scene.remove(this.ambientParticles);
+      this.ambientParticles.geometry.dispose();
+      this.ambientParticles.material.dispose();
+      this.ambientParticles = null;
     }
 
-    // Rebuild fauna for new realm
-    if (this.faunaSystem) {
-      this.faunaSystem.dispose();
-      this.faunaSystem = new FaunaSystem(this.scene, this.terrainSystem, {
-        enabled: this.params.faunaEnabled,
-        faunaTypes: config.faunaTypes || undefined
-      });
-      this.faunaSystem.create();
-    }
+    // Update realm and rebuild
+    this.currentRealm = realmName;
+    this.context.setRealm(realmName);
+    this.setupScene();
 
-    // Rebuild grass system for new realm
-    if (this.grassSystem) {
-      this.grassSystem.dispose();
-      this.grassSystem = new GrassSystem(this.scene, this.terrainSystem, {
-        enabled: config.grassEnabled ?? false,
-        instanceCount: config.grassDensity ?? 50000,
-        grassColor: config.grassColor ? new THREE.Color(config.grassColor) : new THREE.Color(0.1, 0.4, 0.05),
-        clutterEnabled: config.clutterEnabled ?? false,
-        clutterDensity: config.clutterDensity ?? 100
-      });
-      this.grassSystem.create();
-    }
+    // Restore preserved state
+    this.roverPosition.x = preservedState.roverX;
+    this.roverPosition.z = preservedState.roverZ;
+    this.dayNightCycle = preservedState.dayNightCycle;
+    this.dayNightSpeed = preservedState.dayNightSpeed;
 
-    // Rebuild firefly system for new realm
-    if (this.fireflySystem) {
-      this.fireflySystem.dispose();
-      this.fireflySystem = new FireflySystem(this.scene, {
-        count: config.fireflyCount ?? 300,
-        areaSize: 80,
-        minHeight: 0.5,
-        maxHeight: 6,
-        baseColor: config.fireflyColor ? new THREE.Color(config.fireflyColor) : new THREE.Color(0.9, 0.95, 0.3),
-        intensity: config.fireflyIntensity ?? 1.2,
-        lightRadius: 8.0,
-        lightIntensity: 0.8,
-        nightOnly: true
-      });
-      this.fireflySystem.setTerrainSystem(this.terrainSystem);
-
-      // Connect firefly lighting to terrain and grass
-      const fireflyLightTexture = this.fireflySystem.getLightDataTexture();
-      const fireflyColor = this.fireflySystem.config.baseColor;
-      const fireflyRadius = this.fireflySystem.config.lightRadius;
-      this.terrainSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
-      this.grassSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
-    }
-
-    // Rebuild sky system for new realm
-    if (this.skySystem) {
-      this.skySystem.dispose();
-      this.skySystem = new SkySystem(this.scene, {
-        seed: this.currentSeed,
-        starDensity: config.starDensity ?? this.params.starDensity,
-        nebulaIntensity: config.nebulaIntensity ?? this.params.nebulaIntensity,
-        moonCount: config.moonCount ?? 6,
-        showGasPlanet: config.showGasPlanet ?? true,
-        showAurora: config.showAurora ?? true,
-        showPulsars: config.showPulsars ?? true,
-        skyType: config.skyType || 'space'
-      });
-      this.skySystem.create();
-    }
-
-    // Update atmosphere settings
-    this.atmosphereSystem.setFogDensity(config.fogDensity || this.params.fogDensity);
-    this.atmosphereSystem.setBloomStrength(config.bloomStrength ?? this.params.bloomStrength);
-    this.atmosphereSystem.setBloomRadius(config.bloomRadius ?? this.params.bloomRadius);
-
-    if (config.fogColor) {
-      this.scene.fog.color.setHex(config.fogColor);
-    }
-    if (config.skyColor) {
-      this.scene.background.setHex(config.skyColor);
-    }
-
-    // Apply realm-specific effects
-    if (config.underwaterAlways) {
-      this.atmosphereSystem.setUnderwater(true, config.underwaterDepth || 0.5);
-    } else {
-      this.atmosphereSystem.setUnderwater(false, 0);
-    }
+    console.log('Realm rebuild complete');
   }
 
   render(renderer) {
@@ -974,67 +857,40 @@ export class PlanarMode extends BaseMode {
   regenerateWorld(seed) {
     console.log('Regenerating world with seed:', seed);
     this.currentSeed = seed;
-    const config = this.getRealmConfig(this.currentRealm);
 
-    try {
-      // Update terrain seed
-      this.terrainSystem.setSeed(seed);
+    // Full scene rebuild via SystemManager
+    // Preserve current position and time state
+    const preservedState = {
+      roverX: this.roverPosition.x,
+      roverZ: this.roverPosition.z,
+      dayNightCycle: this.dayNightCycle,
+      dayNightSpeed: this.dayNightSpeed
+    };
 
-      // Rebuild flora with new seed
-      if (this.floraSystem) {
-        this.floraSystem.dispose();
-        this.floraSystem = new FloraSystem(this.scene, this.terrainSystem, {
-          enabled: this.params.floraEnabled,
-          floraTypes: config.floraTypes || undefined,
-          sporeCount: config.sporeCount || 300
-        });
-        this.floraSystem.proceduralFlora.seed = seed;
-        this.floraSystem.create();
-      }
-
-      // Rebuild sky with new seed
-      if (this.skySystem) {
-        this.skySystem.dispose();
-        this.skySystem = new SkySystem(this.scene, {
-          seed: seed,
-          starDensity: this.params.starDensity || 5000,
-          nebulaIntensity: this.params.nebulaIntensity || 0.5,
-          moonCount: config.moonCount ?? 6
-        });
-        this.skySystem.create();
-      }
-
-      // Rebuild grass if it exists and is enabled
-      if (this.grassSystem && config.grassEnabled) {
-        this.grassSystem.dispose();
-        this.grassSystem = new GrassSystem(this.scene, this.terrainSystem, {
-          enabled: true,
-          instanceCount: config.grassDensity ?? 50000,
-          grassColor: config.grassColor ? new THREE.Color(config.grassColor) : new THREE.Color(0.1, 0.4, 0.05)
-        });
-        this.grassSystem.create();
-
-        // Reconnect dynamic lighting
-        if (this.fireflySystem) {
-          this.grassSystem.setFireflyLights(
-            this.fireflySystem.getLightDataTexture(),
-            this.fireflySystem.config.baseColor,
-            this.fireflySystem.config.lightRadius
-          );
-        }
-        if (this.wispSystem) {
-          this.grassSystem.setWispLights(
-            this.wispSystem.getLightDataTexture(),
-            this.wispSystem.config.baseColor,
-            this.wispSystem.config.lightRadius
-          );
-        }
-      }
-
-      console.log('World regeneration complete');
-    } catch (error) {
-      console.error('Error regenerating world:', error);
+    // Dispose all systems
+    if (this.systemManager) {
+      this.systemManager.disposeAll();
     }
+    if (this.lightManager) {
+      this.lightManager.dispose();
+    }
+    if (this.ambientParticles) {
+      this.scene.remove(this.ambientParticles);
+      this.ambientParticles.geometry.dispose();
+      this.ambientParticles.material.dispose();
+      this.ambientParticles = null;
+    }
+
+    // Rebuild scene with new seed
+    this.setupScene();
+
+    // Restore preserved state
+    this.roverPosition.x = preservedState.roverX;
+    this.roverPosition.z = preservedState.roverZ;
+    this.dayNightCycle = preservedState.dayNightCycle;
+    this.dayNightSpeed = preservedState.dayNightSpeed;
+
+    console.log('World regeneration complete');
   }
 
   triggerEnergyPulse() {
@@ -1044,13 +900,13 @@ export class PlanarMode extends BaseMode {
   }
 
   dispose() {
-    this.terrainSystem?.dispose();
-    this.skySystem?.dispose();
-    this.atmosphereSystem?.dispose();
-    this.floraSystem?.dispose();
-    this.faunaSystem?.dispose();
-    this.fireflySystem?.dispose();
-    this.wispSystem?.dispose();
+    // Dispose all systems via SystemManager
+    if (this.systemManager) {
+      this.systemManager.disposeAll();
+    }
+    if (this.lightManager) {
+      this.lightManager.dispose();
+    }
 
     if (this.ambientParticles) {
       this.scene.remove(this.ambientParticles);

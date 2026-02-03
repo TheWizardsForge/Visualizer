@@ -9,7 +9,7 @@ A WebGL-based visualizer for displaying trippy visuals. Mostly vibe coded, just 
 
 ## Features
 
-- **11 Visual Modes** - Fractals, particle systems, shaders, and more
+- **11 Visual Modes** - Fractals, particle systems, shaders, and more (note: only the Planar Realms mode and Planet Rover modes are currently maintained- the other ones I will get back to later, but Planar Realms will be the majority of the content.)
 - **Audio Reactive** - Visuals respond to microphone input
 - **Adjustable Parameters** - Each mode has tweakable settings via GUI
 - **Smooth Transitions** - Fade effects when switching between modes
@@ -53,7 +53,7 @@ Then open `http://localhost:5173` in your browser.
 | `Space` | Toggle audio reactive mode |
 | `H` | Hide/show UI |
 
-### Audio Reactivity
+### Audio Reactivity (W.I.P)
 
 Click "Audio Reactive" in the GUI or press `Space` to enable. The visualizer will request microphone access and respond to sound - bass, mids, and treble affect different visual parameters depending on the mode.
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { NOISE_FUNCTIONS, TERRAIN_HEIGHT_FUNCTION } from '../shaders/terrainNoise.glsl.js';
+import { smoothstep } from '../utils/math.js';
 
 /**
  * WispSystem - Ethereal floating lights that illuminate the night
@@ -264,7 +265,7 @@ export class WispSystem {
     // Night factor
     let nightFactor = 1.0;
     if (this.config.nightOnly) {
-      nightFactor = 1.0 - this.smoothstep(0, this.config.fadeThreshold, sunBrightness);
+      nightFactor = 1.0 - smoothstep(0, this.config.fadeThreshold, sunBrightness);
     }
 
     const uniforms = this.mesh.material.uniforms;
@@ -283,11 +284,6 @@ export class WispSystem {
     } else {
       this.clearLightDataTexture();
     }
-  }
-
-  smoothstep(edge0, edge1, x) {
-    const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
-    return t * t * (3 - 2 * t);
   }
 
   clearLightDataTexture() {
