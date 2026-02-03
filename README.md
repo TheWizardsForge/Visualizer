@@ -1,6 +1,6 @@
 # Visualizer
 
-A WebGL-based visualizer for displaying trippy visuals. Perfect for ambient backgrounds, projector displays, or just zoning out. Built with Three.js and Vite.
+A WebGL-based visualizer for displaying trippy visuals. Mostly vibe coded, just a fun toy to use for background ambiance. 
 
 [![ko-fi](https://ko-fi.com/img/githubbutton_sm.svg)](https://ko-fi.com/thewizardsforge)
 
@@ -77,7 +77,7 @@ See existing modes for examples.
 
 ## Contributing
 
-Contributions welcome! Feel free to submit new visual modes, bug fixes, or improvements.
+Feel free to contribute however you want. I'll be updating the project semi-regularly as I find time.
 
 ## Support
 
