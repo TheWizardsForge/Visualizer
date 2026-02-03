@@ -45,6 +45,14 @@ class Visualizer {
     this.transitionProgress = 0;
     this.transitionDuration = 0.5; // seconds
 
+    // Performance options
+    this.showFPS = true;
+    this.frameRateCap = 0; // 0 = uncapped (vsync), 30, 60, etc.
+    this.lastFrameTime = 0;
+    this.frameCount = 0;
+    this.fps = 0;
+    this.fpsUpdateTime = 0;
+
     this.init();
   }
 
@@ -79,6 +87,23 @@ class Visualizer {
       z-index: 1000;
     `;
     document.body.appendChild(this.fadeOverlay);
+
+    // FPS display
+    this.fpsDisplay = document.createElement('div');
+    this.fpsDisplay.style.cssText = `
+      position: fixed;
+      top: 10px;
+      left: 10px;
+      color: #0f0;
+      font-family: monospace;
+      font-size: 14px;
+      background: rgba(0,0,0,0.5);
+      padding: 4px 8px;
+      border-radius: 4px;
+      z-index: 1001;
+    `;
+    this.fpsDisplay.textContent = 'FPS: --';
+    document.body.appendChild(this.fpsDisplay);
 
     // Build mode dropdown options
     this.modeOptions = {};
@@ -124,6 +149,14 @@ class Visualizer {
     audioFolder.add(this, 'audioSensitivity', 0.5, 10.0).name('Sensitivity').onChange((v) => {
       this.audio.setSensitivity(v);
     });
+
+    // Performance controls
+    const perfFolder = mainFolder.addFolder('Performance');
+    perfFolder.add(this, 'showFPS').name('Show FPS').onChange((v) => {
+      this.fpsDisplay.style.display = v ? '' : 'none';
+    });
+    const fpsCapOptions = { 'VSync (Monitor)': 0, '30 FPS': 30, '60 FPS': 60, '120 FPS': 120 };
+    perfFolder.add(this, 'frameRateCap', fpsCapOptions).name('Frame Rate Cap');
 
     // Add mode-specific controls
     this.modeFolder = this.gui.addFolder('Mode Settings');
@@ -199,7 +232,8 @@ class Visualizer {
       case 'h':
         this.uiVisible = !this.uiVisible;
         this.gui.domElement.style.display = this.uiVisible ? '' : 'none';
-        document.getElementById('info').classList.toggle('hidden', !this.uiVisible);
+        this.fpsDisplay.style.display = (this.uiVisible && this.showFPS) ? '' : 'none';
+        document.getElementById('info')?.classList.toggle('hidden', !this.uiVisible);
         break;
       case 'arrowright':
         this.switchMode((this.currentModeIndex + 1) % this.modes.length);
@@ -213,8 +247,28 @@ class Visualizer {
   animate() {
     requestAnimationFrame(() => this.animate());
 
+    const now = performance.now();
+
+    // Frame rate cap (skip frame if too soon)
+    if (this.frameRateCap > 0) {
+      const minFrameTime = 1000 / this.frameRateCap;
+      if (now - this.lastFrameTime < minFrameTime) {
+        return; // Skip this frame
+      }
+    }
+    this.lastFrameTime = now;
+
     const delta = this.clock.getDelta();
     const elapsed = this.clock.getElapsedTime();
+
+    // FPS calculation
+    this.frameCount++;
+    if (now - this.fpsUpdateTime >= 500) { // Update every 500ms
+      this.fps = Math.round(this.frameCount / ((now - this.fpsUpdateTime) / 1000));
+      this.fpsDisplay.textContent = `FPS: ${this.fps}`;
+      this.frameCount = 0;
+      this.fpsUpdateTime = now;
+    }
 
     // Get audio data
     const audioData = this.audioEnabled ? this.audio.getFrequencyData() : null;
