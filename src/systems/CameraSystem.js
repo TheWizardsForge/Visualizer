@@ -35,6 +35,10 @@ export class CameraSystem {
     this.collisionAvoidanceEnabled = true;
     this.collisionAvoidanceHeight = 0;
 
+    // Lateral position (for tree avoidance)
+    this.roverX = 0;
+    this.cameraX = 0;
+
     // Lakes reference (set externally for lake tour mode)
     this.lakes = [];
   }
@@ -57,22 +61,18 @@ export class CameraSystem {
     this.lakes = lakes || [];
   }
 
-  update(delta, elapsed, roverZ, terrainY) {
+  update(delta, elapsed, roverZ, terrainY, roverX = 0) {
+    // Track rover lateral position for tree avoidance
+    this.roverX = roverX;
+
     // GPU terrain samples at (position.z - roverZ), so at screen z=0, worldZ = -roverZ
     // Camera must use same coordinate transform to match GPU terrain
     const worldZ = -roverZ;
-    const terrainHeightAtRover = this.terrainSystem.getHeight(0, worldZ);
+    const terrainHeightAtRover = this.terrainSystem.getHeight(roverX, worldZ);
     const sampleDist = 5;
     const terrainHeightAhead = this.terrainSystem.getHeight(0, worldZ + sampleDist);
     const terrainHeightLeft = this.terrainSystem.getHeight(-sampleDist, worldZ);
     const terrainHeightRight = this.terrainSystem.getHeight(sampleDist, worldZ);
-
-    // Debug: log camera height info
-    if (this._debugCount === undefined) this._debugCount = 0;
-    if (this._debugCount < 10 && this._debugCount % 60 === 0) {
-      console.log(`Camera: roverZ=${roverZ.toFixed(1)}, worldZ=${worldZ.toFixed(1)}, terrainH=${terrainHeightAtRover.toFixed(2)}, cameraY=${this.cameraY.toFixed(2)}, camPosY=${this.camera.position.y.toFixed(2)}`);
-    }
-    this._debugCount++;
 
     const forwardSlope = (terrainHeightAhead - terrainHeightAtRover) / sampleDist;
     const sideSlope = (terrainHeightRight - terrainHeightLeft) / (sampleDist * 2);
@@ -107,12 +107,8 @@ export class CameraSystem {
     const targetY = terrainHeight + this.config.cameraHeight + terrainY;
     this.cameraY += (targetY - this.cameraY) * Math.min(1, delta * 4);
 
-    // Debug camera height tracking
-    if (this._normalDebugCount === undefined) this._normalDebugCount = 0;
-    if (this._normalDebugCount < 5) {
-      console.log(`CamNormal: terrainH=${terrainHeight.toFixed(2)}, cameraHeight=${this.config.cameraHeight}, terrainY=${terrainY}, targetY=${targetY.toFixed(2)}, cameraY=${this.cameraY.toFixed(2)}`);
-      this._normalDebugCount++;
-    }
+    // Smooth camera X following rover position
+    this.cameraX += (this.roverX - this.cameraX) * Math.min(1, delta * 3);
 
     const targetPitch = Math.atan(forwardSlope) * 0.8;
     this.cameraTilt += (targetPitch - this.cameraTilt) * Math.min(1, delta * 3);
@@ -120,7 +116,7 @@ export class CameraSystem {
     const targetRoll = Math.atan(sideSlope) * 0.4;
     this.cameraRoll += (targetRoll - this.cameraRoll) * Math.min(1, delta * 3);
 
-    this.camera.position.x = Math.sin(elapsed * 1.5) * 0.015;
+    this.camera.position.x = this.cameraX + Math.sin(elapsed * 1.5) * 0.015;
     this.camera.position.y = this.cameraY + Math.sin(elapsed * 2) * 0.008;
     this.camera.rotation.x = this.cameraTilt;
     this.camera.rotation.z = this.cameraRoll + Math.sin(elapsed * 0.5) * 0.003;

@@ -162,8 +162,8 @@ export class AtmosphereSystem {
     this.bloomPass = null;
     this.retroPass = null;
 
-    // Day/night state
-    this.dayNightCycle = 0.75; // Start at night
+    // Day/night state (0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset)
+    this.dayNightCycle = 0.0; // Start at midnight
     this.dayNightSpeed = 0.01;
     this.sunBrightness = 0; // Exposed for other systems (0 = night, 1 = noon)
 
@@ -355,8 +355,13 @@ export class AtmosphereSystem {
   updateDayNight(delta) {
     this.dayNightCycle = (this.dayNightCycle + delta * this.dayNightSpeed) % 1;
 
+    // Sun position using -cos so the cycle aligns with clock time:
+    // 0.0 = midnight (sunHeight -1)
+    // 0.25 = sunrise (sunHeight 0)
+    // 0.5 = noon (sunHeight 1)
+    // 0.75 = sunset (sunHeight 0)
     const sunAngle = this.dayNightCycle * Math.PI * 2;
-    const sunHeight = Math.sin(sunAngle);
+    const sunHeight = -Math.cos(sunAngle);
 
     // Expose sun brightness for other systems (0 at night, 1 at noon)
     this.sunBrightness = Math.max(0, sunHeight);
@@ -378,10 +383,12 @@ export class AtmosphereSystem {
       skyColor = this.nightSkyColor.clone().lerp(this.daySkyColor, dayAmount);
       fogColor = this.nightFogColor.clone().lerp(this.dayFogColor, dayAmount);
 
-      // Add sunset/sunrise tint near horizon
+      // Add sunset/sunrise tint near horizon (when sun is low)
       if (sunHeight > -0.3 && sunHeight < 0.3) {
         const horizonAmount = 1 - Math.abs(sunHeight) / 0.3;
-        const tintColor = this.dayNightCycle < 0.5 ? sunsetColor : sunriseColor;
+        // Sunrise is around cycle 0.25, sunset around 0.75
+        const isSunrise = this.dayNightCycle > 0.1 && this.dayNightCycle < 0.4;
+        const tintColor = isSunrise ? sunriseColor : sunsetColor;
         skyColor.lerp(tintColor, horizonAmount * 0.3);
         fogColor.lerp(tintColor, horizonAmount * 0.2);
       }

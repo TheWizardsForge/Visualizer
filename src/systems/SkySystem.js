@@ -680,7 +680,8 @@ export class SkySystem {
     }
 
     // Calculate sun height (-1 to 1, positive = day)
-    const sunAngle = this.dayNightCycle * Math.PI * 2;
+    // Shift by -0.25 so: cycle 0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset
+    const sunAngle = (this.dayNightCycle - 0.25) * Math.PI * 2;
     const sunHeight = Math.sin(sunAngle);
 
     // Update sun position and visibility

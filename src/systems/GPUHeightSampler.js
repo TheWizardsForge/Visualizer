@@ -169,19 +169,8 @@ export class GPUHeightSampler {
     this.renderer.setClearColor(oldClearColor, oldClearAlpha);
 
     // Extract heights from RGBA buffer (R channel only)
-    let minH = Infinity, maxH = -Infinity;
     for (let i = 0; i < this.heightData.length; i++) {
-      const h = this.readBuffer[i * 4];
-      this.heightData[i] = h;
-      if (h < minH) minH = h;
-      if (h > maxH) maxH = h;
-    }
-
-    // Debug: log height range on first few renders
-    if (this.debugRenderCount === undefined) this.debugRenderCount = 0;
-    if (this.debugRenderCount < 3) {
-      console.log(`Heightmap render #${this.debugRenderCount}: center=(${this.centerX.toFixed(1)}, ${this.centerZ.toFixed(1)}), height range: ${minH.toFixed(2)} to ${maxH.toFixed(2)}`);
-      this.debugRenderCount++;
+      this.heightData[i] = this.readBuffer[i * 4];
     }
 
     this.needsReadback = false;
@@ -227,13 +216,6 @@ export class GPUHeightSampler {
     const h0 = h00 * (1 - fx) + h10 * fx;
     const h1 = h01 * (1 - fx) + h11 * fx;
     const height = h0 * (1 - fy) + h1 * fy;
-
-    // Debug output for first few queries
-    if (this.debugQueryCount === undefined) this.debugQueryCount = 0;
-    if (this.debugQueryCount < 5) {
-      console.log(`Height query #${this.debugQueryCount}: world=(${x.toFixed(1)}, ${z.toFixed(1)}), uv=(${u.toFixed(3)}, ${v.toFixed(3)}), height=${height.toFixed(2)}`);
-      this.debugQueryCount++;
-    }
 
     return height;
   }

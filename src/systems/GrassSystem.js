@@ -249,6 +249,11 @@ export class GrassSystem {
     const terrainHeight = this.terrainSystem?.config?.terrainHeight ?? 35.0;
     const terrainScale = this.terrainSystem?.config?.terrainScale ?? 0.0005;
 
+    // Create a default empty light texture (will be replaced by FireflySystem)
+    const emptyLightData = new Float32Array(32 * 4);
+    const defaultLightTexture = new THREE.DataTexture(emptyLightData, 32, 1, THREE.RGBAFormat, THREE.FloatType);
+    defaultLightTexture.needsUpdate = true;
+
     this.grassMaterial = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
@@ -258,7 +263,17 @@ export class GrassSystem {
         uRoverZ: { value: 0 },
         uWrapRange: { value: this.config.width },
         uTerrainHeight: { value: terrainHeight },
-        uTerrainScale: { value: terrainScale }
+        uTerrainScale: { value: terrainScale },
+        // Firefly dynamic lighting
+        uFireflyLights: { value: defaultLightTexture },
+        uFireflyLightCount: { value: 32 },
+        uFireflyLightColor: { value: new THREE.Color(0.9, 0.95, 0.3) },
+        uFireflyLightRadius: { value: 1.5 },
+        // Wisp dynamic lighting
+        uWispLights: { value: defaultLightTexture },
+        uWispLightCount: { value: 40 },
+        uWispLightColor: { value: new THREE.Color(1.0, 0.6, 0.2) },
+        uWispLightRadius: { value: 10.0 }
       },
       vertexShader: `
         attribute vec3 offset;
@@ -276,6 +291,7 @@ export class GrassSystem {
 
         varying vec3 vColor;
         varying float vY;
+        varying vec3 vWorldPos;
 
         ${NOISE_FUNCTIONS}
         ${TERRAIN_HEIGHT_FUNCTION}
@@ -321,13 +337,87 @@ export class GrassSystem {
           // Apply offset with GPU-computed position
           vec3 finalPos = rotatedPos + vec3(offset.x, terrainY, wrappedZ);
 
+          // Pass screen-space position to fragment shader for lighting
+          // Using screen space (no roverZ offset) for simpler coordinate matching
+          vWorldPos = vec3(offset.x, terrainY, wrappedZ);
+
           gl_Position = projectionMatrix * modelViewMatrix * vec4(finalPos, 1.0);
         }
       `,
       fragmentShader: `
         uniform float uAmbientLight;
+        uniform sampler2D uFireflyLights;
+        uniform int uFireflyLightCount;
+        uniform vec3 uFireflyLightColor;
+        uniform float uFireflyLightRadius;
+        uniform sampler2D uWispLights;
+        uniform int uWispLightCount;
+        uniform vec3 uWispLightColor;
+        uniform float uWispLightRadius;
+
         varying vec3 vColor;
         varying float vY;
+        varying vec3 vWorldPos;
+
+        vec3 calculateFireflyLighting(vec3 worldPos) {
+          vec3 totalLight = vec3(0.0);
+          float texelSize = 1.0 / float(uFireflyLightCount);
+
+          for (int i = 0; i < 32; i++) {
+            if (i >= uFireflyLightCount) break;
+
+            vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+            vec3 lightPos = lightData.xyz;
+            float intensity = lightData.w;
+
+            if (intensity > 0.01) {
+              // Use 2D horizontal distance for ground illumination
+              vec2 toLight2D = lightPos.xz - worldPos.xz;
+              float dist = length(toLight2D);
+
+              // Soft attenuation
+              float radius = uFireflyLightRadius;
+              float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
+              attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
+
+              totalLight += uFireflyLightColor * intensity * attenuation;
+            }
+          }
+
+          return totalLight;
+        }
+
+        vec3 calculateWispLighting(vec3 worldPos) {
+          vec3 totalLight = vec3(0.0);
+          float texelSize = 1.0 / float(uWispLightCount);
+
+          for (int i = 0; i < 40; i++) {
+            if (i >= uWispLightCount) break;
+
+            vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+            vec3 lightPos = lightData.xyz;
+            float intensity = lightData.w;
+
+            if (intensity > 0.01) {
+              // Use 2D horizontal distance (XZ) for cylindrical light falloff
+              vec2 toLight2D = lightPos.xz - worldPos.xz;
+              float dist = length(toLight2D);
+
+              // Hard cutoff at radius
+              float radius = uWispLightRadius;
+              if (dist > radius) continue;
+
+              // Exponential falloff for concentrated glow
+              float normalizedDist = dist / radius;
+              float attenuation = exp(-normalizedDist * 3.0);
+              attenuation *= (1.0 - normalizedDist);
+
+              totalLight += uWispLightColor * intensity * attenuation;
+            }
+          }
+
+          return totalLight;
+        }
 
         void main() {
           // Start with base color, boosted for visibility
@@ -351,6 +441,14 @@ export class GrassSystem {
           vec3 nightTint = vec3(0.7, 0.75, 0.9);
           vec3 ambientColor = mix(nightTint, vec3(1.0), uAmbientLight);
           col *= ambientColor * (0.15 + uAmbientLight * 0.85);
+
+          // Add firefly dynamic lighting (warm yellow-green glow)
+          vec3 fireflyLight = calculateFireflyLighting(vWorldPos);
+          col += fireflyLight * 0.15;
+
+          // Add wisp dynamic lighting (warm orange glow)
+          vec3 wispLight = calculateWispLighting(vWorldPos);
+          col += wispLight * 0.2;
 
           gl_FragColor = vec4(col, 1.0);
         }
@@ -793,6 +891,36 @@ export class GrassSystem {
     }
 
     this.grass.geometry.attributes.color.needsUpdate = true;
+  }
+
+  /**
+   * Set the firefly light data texture for dynamic lighting
+   * @param {THREE.DataTexture} lightTexture - Float RGBA texture from FireflySystem
+   * @param {THREE.Color} lightColor - The firefly light color
+   * @param {number} lightRadius - Light falloff radius
+   */
+  setFireflyLights(lightTexture, lightColor, lightRadius) {
+    if (this.grassMaterial?.uniforms) {
+      this.grassMaterial.uniforms.uFireflyLights.value = lightTexture;
+      if (lightColor) {
+        this.grassMaterial.uniforms.uFireflyLightColor.value = lightColor;
+      }
+      if (lightRadius !== undefined) {
+        this.grassMaterial.uniforms.uFireflyLightRadius.value = lightRadius;
+      }
+    }
+  }
+
+  setWispLights(lightTexture, lightColor, lightRadius) {
+    if (this.grassMaterial?.uniforms) {
+      this.grassMaterial.uniforms.uWispLights.value = lightTexture;
+      if (lightColor) {
+        this.grassMaterial.uniforms.uWispLightColor.value = lightColor;
+      }
+      if (lightRadius !== undefined) {
+        this.grassMaterial.uniforms.uWispLightRadius.value = lightRadius;
+      }
+    }
   }
 
   dispose() {

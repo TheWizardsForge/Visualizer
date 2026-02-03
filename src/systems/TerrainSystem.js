@@ -81,6 +81,11 @@ export class TerrainSystem {
 
     this.terrainGeometry = geometry;
 
+    // Create a default empty light texture (will be replaced by FireflySystem)
+    const emptyLightData = new Float32Array(32 * 4);
+    const defaultLightTexture = new THREE.DataTexture(emptyLightData, 32, 1, THREE.RGBAFormat, THREE.FloatType);
+    defaultLightTexture.needsUpdate = true;
+
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uTime: { value: 0 },
@@ -96,7 +101,17 @@ export class TerrainSystem {
         uAlienVeins: { value: this.config.alienVeins ?? 1.0 },
         uGrassShadows: { value: this.config.grassShadows ?? 0.0 },
         fogColor: { value: new THREE.Color(0x0a0a15) },
-        fogDensity: { value: 0.006 }
+        fogDensity: { value: 0.006 },
+        // Firefly dynamic lighting
+        uFireflyLights: { value: defaultLightTexture },
+        uFireflyLightCount: { value: 32 },
+        uFireflyLightColor: { value: new THREE.Color(0.9, 0.95, 0.3) },
+        uFireflyLightRadius: { value: 1.5 },
+        // Wisp dynamic lighting
+        uWispLights: { value: defaultLightTexture },
+        uWispLightCount: { value: 40 },
+        uWispLightColor: { value: new THREE.Color(1.0, 0.6, 0.2) },
+        uWispLightRadius: { value: 8.0 }
       },
       vertexShader: this.getVertexShader(),
       fragmentShader: this.getFragmentShader(),
@@ -139,7 +154,8 @@ export class TerrainSystem {
         vec3 displacedPos = vec3(position.x, terrainY, position.z);
 
         vPosition = displacedPos;
-        vWorldPos = vec3(position.x, terrainY, position.z - uRoverZ);
+        // Use screen-space Z for lighting (no roverZ offset) to match light positions
+        vWorldPos = vec3(position.x, terrainY, position.z);
         vElevation = terrainY;
 
         // Calculate normal from neighboring heights (GPU-side)
@@ -225,6 +241,84 @@ export class TerrainSystem {
         #endif
       #endif
 
+      // Firefly dynamic lighting
+      uniform sampler2D uFireflyLights;
+      uniform int uFireflyLightCount;
+      uniform vec3 uFireflyLightColor;
+      uniform float uFireflyLightRadius;
+
+      vec3 calculateFireflyLighting(vec3 worldPos, vec3 normal) {
+        vec3 totalLight = vec3(0.0);
+        float texelSize = 1.0 / float(uFireflyLightCount);
+
+        for (int i = 0; i < 32; i++) {
+          if (i >= uFireflyLightCount) break;
+
+          vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+          vec3 lightPos = lightData.xyz;
+          float intensity = lightData.w;
+
+          if (intensity > 0.01) {
+            // Use 2D horizontal distance (XZ) for ground illumination
+            vec2 toLight2D = lightPos.xz - worldPos.xz;
+            float dist = length(toLight2D);
+
+            // Soft attenuation - inverse square with cutoff
+            float radius = uFireflyLightRadius;
+            float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
+            attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
+
+            // Simplified diffuse for overhead light casting down
+            float diffuse = 0.6 + 0.4 * max(0.0, normal.y);
+
+            totalLight += uFireflyLightColor * intensity * attenuation * diffuse;
+          }
+        }
+
+        return totalLight;
+      }
+
+      // Wisp dynamic lighting
+      uniform sampler2D uWispLights;
+      uniform int uWispLightCount;
+      uniform vec3 uWispLightColor;
+      uniform float uWispLightRadius;
+
+      vec3 calculateWispLighting(vec3 worldPos, vec3 normal) {
+        vec3 totalLight = vec3(0.0);
+        float texelSize = 1.0 / float(uWispLightCount);
+
+        for (int i = 0; i < 40; i++) {
+          if (i >= uWispLightCount) break;
+
+          vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+          vec3 lightPos = lightData.xyz;
+          float intensity = lightData.w;
+
+          if (intensity > 0.01) {
+            // Use 2D horizontal distance (XZ) for cylindrical light falloff
+            vec2 toLight2D = lightPos.xz - worldPos.xz;
+            float dist = length(toLight2D);
+
+            // Hard cutoff at radius - no light beyond this
+            float radius = uWispLightRadius;
+            if (dist > radius) continue;
+
+            // Exponential falloff for concentrated glow
+            float normalizedDist = dist / radius;
+            float attenuation = exp(-normalizedDist * 3.0);
+            attenuation *= (1.0 - normalizedDist);
+
+            // Simplified diffuse for overhead light casting down
+            float diffuse = 0.6 + 0.4 * max(0.0, normal.y);
+
+            totalLight += uWispLightColor * intensity * attenuation * diffuse;
+          }
+        }
+
+        return totalLight;
+      }
+
       float hash(vec2 p) {
         return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
       }
@@ -299,7 +393,16 @@ export class TerrainSystem {
         vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
         float light = max(dot(vNormal, lightDir), 0.0) * 0.35 + 0.65;
         color *= light * uWeatherTint;
-        color = clamp(color, vec3(0.05), vec3(0.85));
+
+        // Add firefly dynamic lighting (warm yellow-green glow at night)
+        vec3 fireflyLight = calculateFireflyLighting(vWorldPos, vNormal);
+        color += fireflyLight * 0.6;
+
+        // Add wisp dynamic lighting (ethereal blue-white glow)
+        vec3 wispLight = calculateWispLighting(vWorldPos, vNormal);
+        color += wispLight * 1.2;
+
+        color = clamp(color, vec3(0.05), vec3(1.5));
 
         gl_FragColor = vec4(color, 1.0);
 
@@ -460,6 +563,42 @@ export class TerrainSystem {
     // The seed uniform affects terrain variation
     if (this.terrain) {
       this.terrain.material.uniforms.uSeed.value = seed;
+    }
+  }
+
+  /**
+   * Set the firefly light data texture for dynamic lighting
+   * @param {THREE.DataTexture} lightTexture - Float RGBA texture from FireflySystem
+   * @param {THREE.Color} lightColor - The firefly light color
+   * @param {number} lightRadius - Light falloff radius
+   */
+  setFireflyLights(lightTexture, lightColor, lightRadius) {
+    if (this.terrain?.material?.uniforms) {
+      this.terrain.material.uniforms.uFireflyLights.value = lightTexture;
+      if (lightColor) {
+        this.terrain.material.uniforms.uFireflyLightColor.value = lightColor;
+      }
+      if (lightRadius !== undefined) {
+        this.terrain.material.uniforms.uFireflyLightRadius.value = lightRadius;
+      }
+    }
+  }
+
+  /**
+   * Set the wisp light data texture for dynamic lighting
+   * @param {THREE.DataTexture} lightTexture - Float RGBA texture from WispSystem
+   * @param {THREE.Color} lightColor - The wisp light color
+   * @param {number} lightRadius - Light falloff radius
+   */
+  setWispLights(lightTexture, lightColor, lightRadius) {
+    if (this.terrain?.material?.uniforms) {
+      this.terrain.material.uniforms.uWispLights.value = lightTexture;
+      if (lightColor) {
+        this.terrain.material.uniforms.uWispLightColor.value = lightColor;
+      }
+      if (lightRadius !== undefined) {
+        this.terrain.material.uniforms.uWispLightRadius.value = lightRadius;
+      }
     }
   }
 

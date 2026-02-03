@@ -7,6 +7,8 @@ import { CameraSystem } from '../systems/CameraSystem.js';
 import { FloraSystem } from '../systems/FloraSystem.js';
 import { FaunaSystem } from '../systems/FaunaSystem.js';
 import { GrassSystem } from '../systems/GrassSystem.js';
+import { FireflySystem } from '../systems/FireflySystem.js';
+import { WispSystem } from '../systems/WispSystem.js';
 import { SimplexNoise } from '../systems/SimplexNoise.js';
 
 /**
@@ -53,6 +55,10 @@ export class PlanarMode extends BaseMode {
 
     // Rover/movement state
     this.roverPosition = new THREE.Vector3(0, 0, 0);
+    this.roverTargetX = 0;     // Target X position for smooth steering
+    this.treeAvoidanceEnabled = true;
+    this.pathLookAhead = 80;   // How far ahead to plan (units) - extended for smoother avoidance
+    this.steeringSmoothness = 0.6; // How quickly to steer toward target
     this.time = 0;
 
     // Day/night (0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset)
@@ -72,6 +78,8 @@ export class PlanarMode extends BaseMode {
     this.floraSystem = null;
     this.faunaSystem = null;
     this.grassSystem = null;
+    this.fireflySystem = null;
+    this.wispSystem = null;
 
     this.setupScene();
   }
@@ -128,6 +136,57 @@ export class PlanarMode extends BaseMode {
       clutterDensity: Math.min(realmConfig.clutterDensity ?? 100, this.qualitySettings.clutterDensity)
     });
     this.grassSystem.create();
+
+    // Initialize Firefly System for night-time ambiance
+    // Fireflies glow visually but cast minimal ground light (wisps are the main light source)
+    this.fireflySystem = new FireflySystem(this.scene, {
+      count: realmConfig.fireflyCount ?? 300,
+      areaSize: 80,
+      minHeight: 0.5,
+      maxHeight: 6,
+      baseColor: realmConfig.fireflyColor ? new THREE.Color(realmConfig.fireflyColor) : new THREE.Color(0.9, 0.95, 0.3),
+      intensity: realmConfig.fireflyIntensity ?? 1.2,
+      lightRadius: 1.5,        // Tiny glow
+      lightIntensity: 0.03,    // Nearly invisible ground light
+      nightOnly: true
+    });
+    this.fireflySystem.setTerrainSystem(this.terrainSystem);
+
+    // Connect firefly lighting to terrain, grass, and flora
+    const fireflyLightTexture = this.fireflySystem.getLightDataTexture();
+    const fireflyColor = this.fireflySystem.config.baseColor;
+    const fireflyRadius = this.fireflySystem.config.lightRadius;
+    this.terrainSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
+    this.grassSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
+    if (this.floraSystem) {
+      this.floraSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
+    }
+
+    // Initialize Wisp System for dramatic night illumination
+    this.wispSystem = new WispSystem(this.scene, {
+      count: realmConfig.wispCount ?? 40,
+      maxLights: realmConfig.wispCount ?? 40,
+      areaSize: 100,
+      minHeight: 1.5,
+      maxHeight: 10,
+      baseColor: realmConfig.wispColor ? new THREE.Color(realmConfig.wispColor) : new THREE.Color(1.0, 0.6, 0.2),
+      coreColor: new THREE.Color(1.0, 0.9, 0.6),
+      intensity: realmConfig.wispIntensity ?? 2.0,
+      lightRadius: 15.0,       // Large spherical glow to handle Y variation
+      lightIntensity: 0.5,     // Visible pools of light
+      nightOnly: true
+    });
+    this.wispSystem.setTerrainSystem(this.terrainSystem);
+
+    // Connect wisp lighting to terrain, grass, and flora
+    const wispLightTexture = this.wispSystem.getLightDataTexture();
+    const wispColor = this.wispSystem.config.baseColor;
+    const wispRadius = this.wispSystem.config.lightRadius;
+    this.terrainSystem.setWispLights(wispLightTexture, wispColor, wispRadius);
+    this.grassSystem.setWispLights(wispLightTexture, wispColor, wispRadius);
+    if (this.floraSystem) {
+      this.floraSystem.setWispLights(wispLightTexture, wispColor, wispRadius);
+    }
 
     // Initialize Sky System with realm-specific settings
     this.skySystem = new SkySystem(this.scene, {
@@ -520,6 +579,66 @@ export class PlanarMode extends BaseMode {
     const speed = this.params.speed * delta * 10;
     this.roverPosition.z -= speed;
 
+    // Tree trunk avoidance - plan smooth path ahead
+    if (this.treeAvoidanceEnabled && this.floraSystem) {
+      // Get all flora in the path ahead
+      const nearbyFlora = this.floraSystem.getFloraInPath(
+        3,                    // minZ: slightly behind (catch trees we're passing)
+        -this.pathLookAhead,  // maxZ: look ahead distance
+        15,                   // xRange: check 15 units left and right
+        1.2                   // trunkRadius: base trunk size with margin
+      );
+
+      // Find the best lane to drive in by scoring different X positions
+      // Sample potential positions from -10 to +10
+      let bestX = 0;
+      let bestScore = -Infinity;
+      const laneWidth = 2.5; // Minimum clearance needed
+
+      for (let testX = -12; testX <= 12; testX += 1.5) {
+        let score = 0;
+
+        // Prefer staying near center (slight bias)
+        score -= Math.abs(testX) * 0.1;
+
+        // Prefer staying near current position (smooth path)
+        score -= Math.abs(testX - this.roverPosition.x) * 0.3;
+
+        // Check for obstacles along this lane
+        for (const flora of nearbyFlora) {
+          // Only consider flora in front of us
+          if (flora.z < 3 && flora.z > -this.pathLookAhead) {
+            const dx = testX - flora.x;
+            const distFromLane = Math.abs(dx);
+            const distAhead = Math.abs(flora.z);
+
+            // How close is this obstacle to our test lane?
+            if (distFromLane < laneWidth + flora.radius) {
+              // Obstacle blocks this lane - big penalty, worse if closer
+              const proximityPenalty = (1.0 - distAhead / this.pathLookAhead);
+              const blockPenalty = (laneWidth + flora.radius - distFromLane) * 5;
+              score -= blockPenalty * (1 + proximityPenalty * 2);
+            }
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = testX;
+        }
+      }
+
+      // Smoothly update target position (gradual but responsive enough to avoid trees)
+      this.roverTargetX += (bestX - this.roverTargetX) * Math.min(1, delta * 0.8);
+
+      // Smoothly steer toward target (relaxed but effective)
+      const steerAmount = (this.roverTargetX - this.roverPosition.x) * this.steeringSmoothness * delta;
+      this.roverPosition.x += steerAmount;
+
+      // Clamp lateral movement
+      this.roverPosition.x = Math.max(-12, Math.min(12, this.roverPosition.x));
+    }
+
     // Handle realm transition
     if (this.realmTransitioning) {
       this.realmTransitionProgress += delta * 2;
@@ -562,12 +681,13 @@ export class PlanarMode extends BaseMode {
       this.atmosphereSystem.updateGlitch(delta);
     }
 
-    // Update camera
+    // Update camera (with rover X for tree avoidance)
     this.cameraSystem.update(
       delta,
       elapsed,
       this.roverPosition.z,
-      this.terrainSystem.terrain.position.y
+      this.terrainSystem.terrain.position.y,
+      this.roverPosition.x
     );
 
     // Update flora (pass sun brightness for foliage lighting)
@@ -585,6 +705,30 @@ export class PlanarMode extends BaseMode {
       this.faunaSystem.update(delta, elapsed, audioData, this.roverPosition.z, this.terrainSystem.terrain.position.y);
     }
 
+    // Update fireflies (night-time dynamic lighting)
+    if (this.fireflySystem) {
+      this.fireflySystem.update(
+        delta,
+        elapsed,
+        this.roverPosition.z,
+        this.terrainSystem.terrain.position.y,
+        this.atmosphereSystem.sunBrightness,
+        audioData
+      );
+    }
+
+    // Update wisps (larger night illumination)
+    if (this.wispSystem) {
+      this.wispSystem.update(
+        delta,
+        elapsed,
+        this.roverPosition.z,
+        this.terrainSystem.terrain.position.y,
+        this.atmosphereSystem.sunBrightness,
+        audioData
+      );
+    }
+
     // Update day/night cycle
     this.dayNightCycle = this.atmosphereSystem.dayNightCycle;
     this.timeOfDay = this.dayNightCycle * 24; // Sync for GUI display
@@ -600,7 +744,8 @@ export class PlanarMode extends BaseMode {
     }
 
     // Sync sky aurora intensity with day/night
-    const sunHeight = Math.sin(this.dayNightCycle * Math.PI * 2);
+    // Using -cos so: 0=midnight(-1), 0.25=sunrise(0), 0.5=noon(1), 0.75=sunset(0)
+    const sunHeight = -Math.cos(this.dayNightCycle * Math.PI * 2);
     const auroraIntensity = Math.max(0, -sunHeight + 0.3);
     this.skySystem.setAuroraIntensity(auroraIntensity);
 
@@ -652,6 +797,30 @@ export class PlanarMode extends BaseMode {
         clutterDensity: config.clutterDensity ?? 100
       });
       this.grassSystem.create();
+    }
+
+    // Rebuild firefly system for new realm
+    if (this.fireflySystem) {
+      this.fireflySystem.dispose();
+      this.fireflySystem = new FireflySystem(this.scene, {
+        count: config.fireflyCount ?? 300,
+        areaSize: 80,
+        minHeight: 0.5,
+        maxHeight: 6,
+        baseColor: config.fireflyColor ? new THREE.Color(config.fireflyColor) : new THREE.Color(0.9, 0.95, 0.3),
+        intensity: config.fireflyIntensity ?? 1.2,
+        lightRadius: 8.0,
+        lightIntensity: 0.8,
+        nightOnly: true
+      });
+      this.fireflySystem.setTerrainSystem(this.terrainSystem);
+
+      // Connect firefly lighting to terrain and grass
+      const fireflyLightTexture = this.fireflySystem.getLightDataTexture();
+      const fireflyColor = this.fireflySystem.config.baseColor;
+      const fireflyRadius = this.fireflySystem.config.lightRadius;
+      this.terrainSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
+      this.grassSystem.setFireflyLights(fireflyLightTexture, fireflyColor, fireflyRadius);
     }
 
     // Rebuild sky system for new realm
@@ -803,9 +972,69 @@ export class PlanarMode extends BaseMode {
   }
 
   regenerateWorld(seed) {
+    console.log('Regenerating world with seed:', seed);
     this.currentSeed = seed;
-    this.terrainSystem.setSeed(seed);
-    this.skySystem.noise = new SimplexNoise(seed);
+    const config = this.getRealmConfig(this.currentRealm);
+
+    try {
+      // Update terrain seed
+      this.terrainSystem.setSeed(seed);
+
+      // Rebuild flora with new seed
+      if (this.floraSystem) {
+        this.floraSystem.dispose();
+        this.floraSystem = new FloraSystem(this.scene, this.terrainSystem, {
+          enabled: this.params.floraEnabled,
+          floraTypes: config.floraTypes || undefined,
+          sporeCount: config.sporeCount || 300
+        });
+        this.floraSystem.proceduralFlora.seed = seed;
+        this.floraSystem.create();
+      }
+
+      // Rebuild sky with new seed
+      if (this.skySystem) {
+        this.skySystem.dispose();
+        this.skySystem = new SkySystem(this.scene, {
+          seed: seed,
+          starDensity: this.params.starDensity || 5000,
+          nebulaIntensity: this.params.nebulaIntensity || 0.5,
+          moonCount: config.moonCount ?? 6
+        });
+        this.skySystem.create();
+      }
+
+      // Rebuild grass if it exists and is enabled
+      if (this.grassSystem && config.grassEnabled) {
+        this.grassSystem.dispose();
+        this.grassSystem = new GrassSystem(this.scene, this.terrainSystem, {
+          enabled: true,
+          instanceCount: config.grassDensity ?? 50000,
+          grassColor: config.grassColor ? new THREE.Color(config.grassColor) : new THREE.Color(0.1, 0.4, 0.05)
+        });
+        this.grassSystem.create();
+
+        // Reconnect dynamic lighting
+        if (this.fireflySystem) {
+          this.grassSystem.setFireflyLights(
+            this.fireflySystem.getLightDataTexture(),
+            this.fireflySystem.config.baseColor,
+            this.fireflySystem.config.lightRadius
+          );
+        }
+        if (this.wispSystem) {
+          this.grassSystem.setWispLights(
+            this.wispSystem.getLightDataTexture(),
+            this.wispSystem.config.baseColor,
+            this.wispSystem.config.lightRadius
+          );
+        }
+      }
+
+      console.log('World regeneration complete');
+    } catch (error) {
+      console.error('Error regenerating world:', error);
+    }
   }
 
   triggerEnergyPulse() {
@@ -820,6 +1049,8 @@ export class PlanarMode extends BaseMode {
     this.atmosphereSystem?.dispose();
     this.floraSystem?.dispose();
     this.faunaSystem?.dispose();
+    this.fireflySystem?.dispose();
+    this.wispSystem?.dispose();
 
     if (this.ambientParticles) {
       this.scene.remove(this.ambientParticles);

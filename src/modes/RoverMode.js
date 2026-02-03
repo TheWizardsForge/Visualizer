@@ -244,7 +244,7 @@ export class RoverMode extends BaseMode {
     this.currentWeather = 'clear';
     this.weatherTimer = 0;
     this.weatherTransition = 0;
-    this.dayNightCycle = 0.75; // Start at night (0=noon, 0.5=sunset, 0.75=night, 1=sunrise)
+    this.dayNightCycle = 0.0; // Start at midnight (0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset)
     this.dayNightSpeed = 0.01; // Full cycle in ~100 seconds
     this.activeEvents = [];
     this.isUnderwater = false;
@@ -427,7 +427,7 @@ export class RoverMode extends BaseMode {
       // Color shifts with day/night
       const nightColor = new THREE.Color(0.15, 0.18, 0.25);
       const dayColor = new THREE.Color(0.5, 0.55, 0.6);
-      const sunHeight = Math.sin(this.dayNightCycle * Math.PI * 2);
+      const sunHeight = -Math.cos(this.dayNightCycle * Math.PI * 2);
       const t = (sunHeight + 1) / 2;
       cloud.material.uniforms.uColor.value.copy(nightColor).lerp(dayColor, t);
     });
@@ -2905,11 +2905,12 @@ export class RoverMode extends BaseMode {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.sporeVelocities = velocities;
 
+    // Natural pollen/dust particles instead of alien spores
     const material = new THREE.PointsMaterial({
-      color: 0x88ffaa,
-      size: 0.4,
+      color: 0xeedd88,  // Soft golden amber (natural pollen)
+      size: 0.15,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.4,
       blending: THREE.AdditiveBlending
     });
 
@@ -4586,9 +4587,9 @@ export class RoverMode extends BaseMode {
     // Advance the day/night cycle
     this.dayNightCycle = (this.dayNightCycle + delta * this.dayNightSpeed) % 1;
 
-    // Calculate sun position (0=noon, 0.25=sunset, 0.5=midnight, 0.75=sunrise)
+    // Calculate sun position (0=midnight, 0.25=sunrise, 0.5=noon, 0.75=sunset)
     const sunAngle = this.dayNightCycle * Math.PI * 2;
-    const sunHeight = Math.sin(sunAngle); // -1 to 1, negative = night
+    const sunHeight = -Math.cos(sunAngle); // -1 to 1, negative = night
 
     // Sky colors based on time of day
     const nightColor = new THREE.Color(0x000008);
@@ -4890,8 +4891,8 @@ export class RoverMode extends BaseMode {
         if (positions[i + 2] < -50) positions[i + 2] += 100;
       }
       this.spores.geometry.attributes.position.needsUpdate = true;
-      this.spores.material.opacity = 0.5 + this.floraAudioMid * 0.5;
-      this.spores.material.size = 0.3 + this.floraAudioBass * 0.3;
+      this.spores.material.opacity = 0.3 + this.floraAudioMid * 0.3;
+      this.spores.material.size = 0.12 + this.floraAudioBass * 0.15;
     }
 
     // Update biome-specific flora

@@ -27,24 +27,44 @@ export class ProceduralFloraSystem {
       return this.foliageMaterials.get(colorKey);
     }
 
+    // Create default empty light texture
+    const emptyLightData = new Float32Array(32 * 4);
+    const defaultLightTexture = new THREE.DataTexture(emptyLightData, 32, 1, THREE.RGBAFormat, THREE.FloatType);
+    defaultLightTexture.needsUpdate = true;
+
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uBaseColor: { value: color },
         uSunDirection: { value: new THREE.Vector3(0.5, 1.0, 0.3).normalize() },
         uSunBrightness: { value: 1.0 },
-        uTime: { value: 0 }
+        uTime: { value: 0 },
+        uDitherDistance: { value: 6.0 },
+        // Dynamic lighting
+        uFireflyLights: { value: defaultLightTexture },
+        uFireflyLightCount: { value: 32 },
+        uFireflyLightColor: { value: new THREE.Color(0.9, 0.95, 0.3) },
+        uFireflyLightRadius: { value: 1.5 },
+        uWispLights: { value: defaultLightTexture },
+        uWispLightCount: { value: 40 },
+        uWispLightColor: { value: new THREE.Color(1.0, 0.6, 0.2) },
+        uWispLightRadius: { value: 10.0 }
       },
       vertexShader: `
         varying vec3 vNormal;
         varying vec3 vLocalPos;
         varying vec3 vViewDir;
+        varying float vCameraDist;
+        varying vec3 vWorldPos;
 
         void main() {
           vNormal = normalize(normalMatrix * normal);
           vLocalPos = position; // Use local position for stable noise
           vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPosition.xyz;
           vViewDir = normalize(cameraPosition - worldPosition.xyz);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vCameraDist = -mvPosition.z;
+          gl_Position = projectionMatrix * mvPosition;
         }
       `,
       fragmentShader: `
@@ -52,17 +72,101 @@ export class ProceduralFloraSystem {
         uniform vec3 uSunDirection;
         uniform float uSunBrightness;
         uniform float uTime;
+        uniform float uDitherDistance;
+        // Dynamic lighting uniforms
+        uniform sampler2D uFireflyLights;
+        uniform int uFireflyLightCount;
+        uniform vec3 uFireflyLightColor;
+        uniform float uFireflyLightRadius;
+        uniform sampler2D uWispLights;
+        uniform int uWispLightCount;
+        uniform vec3 uWispLightColor;
+        uniform float uWispLightRadius;
 
         varying vec3 vNormal;
         varying vec3 vLocalPos;
         varying vec3 vViewDir;
+        varying float vCameraDist;
+        varying vec3 vWorldPos;
 
         // Simple noise for color variation
         float hash(vec3 p) {
           return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453);
         }
 
+        // 4x4 Bayer dither matrix
+        float bayerDither(vec2 screenPos) {
+          int x = int(mod(screenPos.x, 4.0));
+          int y = int(mod(screenPos.y, 4.0));
+          int index = x + y * 4;
+          float thresholds[16];
+          thresholds[0] = 0.0/16.0;  thresholds[1] = 8.0/16.0;
+          thresholds[2] = 2.0/16.0;  thresholds[3] = 10.0/16.0;
+          thresholds[4] = 12.0/16.0; thresholds[5] = 4.0/16.0;
+          thresholds[6] = 14.0/16.0; thresholds[7] = 6.0/16.0;
+          thresholds[8] = 3.0/16.0;  thresholds[9] = 11.0/16.0;
+          thresholds[10] = 1.0/16.0; thresholds[11] = 9.0/16.0;
+          thresholds[12] = 15.0/16.0; thresholds[13] = 7.0/16.0;
+          thresholds[14] = 13.0/16.0; thresholds[15] = 5.0/16.0;
+          for (int i = 0; i < 16; i++) {
+            if (i == index) return thresholds[i];
+          }
+          return 0.0;
+        }
+
+        vec3 calculateFireflyLighting(vec3 worldPos) {
+          vec3 totalLight = vec3(0.0);
+          float texelSize = 1.0 / float(uFireflyLightCount);
+          for (int i = 0; i < 32; i++) {
+            if (i >= uFireflyLightCount) break;
+            vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+            vec3 lightPos = lightData.xyz;
+            float intensity = lightData.w;
+            if (intensity > 0.01) {
+              vec2 toLight2D = lightPos.xz - worldPos.xz;
+              float dist = length(toLight2D);
+              float radius = uFireflyLightRadius;
+              float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
+              attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
+              totalLight += uFireflyLightColor * intensity * attenuation;
+            }
+          }
+          return totalLight;
+        }
+
+        vec3 calculateWispLighting(vec3 worldPos) {
+          vec3 totalLight = vec3(0.0);
+          float texelSize = 1.0 / float(uWispLightCount);
+          for (int i = 0; i < 40; i++) {
+            if (i >= uWispLightCount) break;
+            vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+            vec3 lightPos = lightData.xyz;
+            float intensity = lightData.w;
+            if (intensity > 0.01) {
+              // Use 2D horizontal distance (XZ) for cylindrical light falloff
+              vec2 toLight2D = lightPos.xz - worldPos.xz;
+              float dist = length(toLight2D);
+              float radius = uWispLightRadius;
+              if (dist > radius) continue;
+              float normalizedDist = dist / radius;
+              float attenuation = exp(-normalizedDist * 3.0);
+              attenuation *= (1.0 - normalizedDist);
+              totalLight += uWispLightColor * intensity * attenuation;
+            }
+          }
+          return totalLight;
+        }
+
         void main() {
+          // Proximity dithering - fade when close to camera
+          if (uDitherDistance > 0.0) {
+            float proximityFactor = 1.0 - smoothstep(0.0, uDitherDistance, vCameraDist);
+            if (proximityFactor > 0.0) {
+              float threshold = bayerDither(gl_FragCoord.xy);
+              if (proximityFactor > threshold) discard;
+            }
+          }
+
           vec3 normal = normalize(vNormal);
 
           // Base color with subtle noise variation (using local position - stable)
@@ -91,6 +195,11 @@ export class ProceduralFloraSystem {
           vec3 ambientColor = mix(nightTint, vec3(1.0), uSunBrightness);
           color *= ambientColor * ambientLevel;
 
+          // Add dynamic lighting from fireflies and wisps
+          vec3 fireflyLight = calculateFireflyLighting(vWorldPos);
+          vec3 wispLight = calculateWispLighting(vWorldPos);
+          color += fireflyLight * 0.5 + wispLight * 0.6;
+
           gl_FragColor = vec4(color, 1.0);
         }
       `,
@@ -112,24 +221,130 @@ export class ProceduralFloraSystem {
       return this.trunkMaterials.get(colorKey);
     }
 
+    // Create default empty light texture
+    const emptyLightData = new Float32Array(32 * 4);
+    const defaultLightTexture = new THREE.DataTexture(emptyLightData, 32, 1, THREE.RGBAFormat, THREE.FloatType);
+    defaultLightTexture.needsUpdate = true;
+
     const material = new THREE.ShaderMaterial({
       uniforms: {
         uBaseColor: { value: color },
-        uSunBrightness: { value: 1.0 }
+        uSunBrightness: { value: 1.0 },
+        uDitherDistance: { value: 6.0 },
+        // Dynamic lighting
+        uFireflyLights: { value: defaultLightTexture },
+        uFireflyLightCount: { value: 32 },
+        uFireflyLightColor: { value: new THREE.Color(0.9, 0.95, 0.3) },
+        uFireflyLightRadius: { value: 1.5 },
+        uWispLights: { value: defaultLightTexture },
+        uWispLightCount: { value: 40 },
+        uWispLightColor: { value: new THREE.Color(1.0, 0.6, 0.2) },
+        uWispLightRadius: { value: 8.0 }
       },
       vertexShader: `
         varying vec3 vNormal;
+        varying float vCameraDist;
+        varying vec3 vWorldPos;
         void main() {
           vNormal = normalize(normalMatrix * normal);
-          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPos = worldPosition.xyz;
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          vCameraDist = -mvPosition.z;
+          gl_Position = projectionMatrix * mvPosition;
         }
       `,
       fragmentShader: `
         uniform vec3 uBaseColor;
         uniform float uSunBrightness;
+        uniform float uDitherDistance;
+        // Dynamic lighting uniforms
+        uniform sampler2D uFireflyLights;
+        uniform int uFireflyLightCount;
+        uniform vec3 uFireflyLightColor;
+        uniform float uFireflyLightRadius;
+        uniform sampler2D uWispLights;
+        uniform int uWispLightCount;
+        uniform vec3 uWispLightColor;
+        uniform float uWispLightRadius;
+
         varying vec3 vNormal;
+        varying float vCameraDist;
+        varying vec3 vWorldPos;
+
+        // 4x4 Bayer dither matrix
+        float bayerDither(vec2 screenPos) {
+          int x = int(mod(screenPos.x, 4.0));
+          int y = int(mod(screenPos.y, 4.0));
+          int index = x + y * 4;
+          float thresholds[16];
+          thresholds[0] = 0.0/16.0;  thresholds[1] = 8.0/16.0;
+          thresholds[2] = 2.0/16.0;  thresholds[3] = 10.0/16.0;
+          thresholds[4] = 12.0/16.0; thresholds[5] = 4.0/16.0;
+          thresholds[6] = 14.0/16.0; thresholds[7] = 6.0/16.0;
+          thresholds[8] = 3.0/16.0;  thresholds[9] = 11.0/16.0;
+          thresholds[10] = 1.0/16.0; thresholds[11] = 9.0/16.0;
+          thresholds[12] = 15.0/16.0; thresholds[13] = 7.0/16.0;
+          thresholds[14] = 13.0/16.0; thresholds[15] = 5.0/16.0;
+          for (int i = 0; i < 16; i++) {
+            if (i == index) return thresholds[i];
+          }
+          return 0.0;
+        }
+
+        vec3 calculateFireflyLighting(vec3 worldPos) {
+          vec3 totalLight = vec3(0.0);
+          float texelSize = 1.0 / float(uFireflyLightCount);
+          for (int i = 0; i < 32; i++) {
+            if (i >= uFireflyLightCount) break;
+            vec4 lightData = texture2D(uFireflyLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+            vec3 lightPos = lightData.xyz;
+            float intensity = lightData.w;
+            if (intensity > 0.01) {
+              vec2 toLight2D = lightPos.xz - worldPos.xz;
+              float dist = length(toLight2D);
+              float radius = uFireflyLightRadius;
+              float attenuation = 1.0 / (1.0 + dist * dist / (radius * radius));
+              attenuation *= smoothstep(radius * 2.5, radius * 0.5, dist);
+              totalLight += uFireflyLightColor * intensity * attenuation;
+            }
+          }
+          return totalLight;
+        }
+
+        vec3 calculateWispLighting(vec3 worldPos) {
+          vec3 totalLight = vec3(0.0);
+          float texelSize = 1.0 / float(uWispLightCount);
+          for (int i = 0; i < 40; i++) {
+            if (i >= uWispLightCount) break;
+            vec4 lightData = texture2D(uWispLights, vec2((float(i) + 0.5) * texelSize, 0.5));
+            vec3 lightPos = lightData.xyz;
+            float intensity = lightData.w;
+            if (intensity > 0.01) {
+              // Use 2D horizontal distance (XZ) for cylindrical light falloff
+              vec2 toLight2D = lightPos.xz - worldPos.xz;
+              float dist = length(toLight2D);
+              float radius = uWispLightRadius;
+              if (dist > radius) continue;
+              float normalizedDist = dist / radius;
+              float attenuation = exp(-normalizedDist * 3.0);
+              attenuation *= (1.0 - normalizedDist);
+              totalLight += uWispLightColor * intensity * attenuation;
+            }
+          }
+          return totalLight;
+        }
 
         void main() {
+          // Proximity dithering - fade when close to camera
+          if (uDitherDistance > 0.0) {
+            float proximityFactor = 1.0 - smoothstep(0.0, uDitherDistance, vCameraDist);
+            if (proximityFactor > 0.0) {
+              float threshold = bayerDither(gl_FragCoord.xy);
+              if (proximityFactor > threshold) discard;
+            }
+          }
+
           // Simple diffuse shading
           vec3 lightDir = normalize(vec3(0.5, 1.0, 0.3));
           float diffuse = max(dot(vNormal, lightDir), 0.0) * 0.3 + 0.7;
@@ -140,6 +355,11 @@ export class ProceduralFloraSystem {
           vec3 nightTint = vec3(0.7, 0.75, 0.9);
           vec3 ambientColor = mix(nightTint, vec3(1.0), uSunBrightness);
           color *= ambientColor * ambientLevel;
+
+          // Add dynamic lighting from fireflies and wisps
+          vec3 fireflyLight = calculateFireflyLighting(vWorldPos);
+          vec3 wispLight = calculateWispLighting(vWorldPos);
+          color += fireflyLight * 0.5 + wispLight * 0.6;
 
           gl_FragColor = vec4(color, 1.0);
         }
@@ -165,6 +385,63 @@ export class ProceduralFloraSystem {
     for (const material of this.trunkMaterials.values()) {
       if (material.uniforms) {
         material.uniforms.uSunBrightness.value = sunBrightness;
+      }
+    }
+  }
+
+  /**
+   * Set proximity dithering distance for all flora materials
+   * @param {number} distance - Distance at which dithering starts (0 to disable)
+   */
+  setDitherDistance(distance) {
+    for (const material of this.foliageMaterials.values()) {
+      if (material.uniforms?.uDitherDistance) {
+        material.uniforms.uDitherDistance.value = distance;
+      }
+    }
+    for (const material of this.trunkMaterials.values()) {
+      if (material.uniforms?.uDitherDistance) {
+        material.uniforms.uDitherDistance.value = distance;
+      }
+    }
+  }
+
+  /**
+   * Set wisp light data for all flora materials
+   */
+  setWispLights(texture, color, radius) {
+    for (const material of this.foliageMaterials.values()) {
+      if (material.uniforms?.uWispLights) {
+        material.uniforms.uWispLights.value = texture;
+        material.uniforms.uWispLightColor.value = color;
+        material.uniforms.uWispLightRadius.value = radius;
+      }
+    }
+    for (const material of this.trunkMaterials.values()) {
+      if (material.uniforms?.uWispLights) {
+        material.uniforms.uWispLights.value = texture;
+        material.uniforms.uWispLightColor.value = color;
+        material.uniforms.uWispLightRadius.value = radius;
+      }
+    }
+  }
+
+  /**
+   * Set firefly light data for all flora materials
+   */
+  setFireflyLights(texture, color, radius) {
+    for (const material of this.foliageMaterials.values()) {
+      if (material.uniforms?.uFireflyLights) {
+        material.uniforms.uFireflyLights.value = texture;
+        material.uniforms.uFireflyLightColor.value = color;
+        material.uniforms.uFireflyLightRadius.value = radius;
+      }
+    }
+    for (const material of this.trunkMaterials.values()) {
+      if (material.uniforms?.uFireflyLights) {
+        material.uniforms.uFireflyLights.value = texture;
+        material.uniforms.uFireflyLightColor.value = color;
+        material.uniforms.uFireflyLightRadius.value = radius;
       }
     }
   }

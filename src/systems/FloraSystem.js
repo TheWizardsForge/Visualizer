@@ -1425,11 +1425,12 @@ export class FloraSystem {
     geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     this.sporeVelocities = velocities;
 
+    // Natural pollen/dust particles instead of alien spores
     const material = new THREE.PointsMaterial({
-      color: 0x88ffaa,
-      size: 0.4,
+      color: 0xeedd88,  // Soft golden amber (natural pollen)
+      size: 0.15,
       transparent: true,
-      opacity: 0.7,
+      opacity: 0.4,
       blending: THREE.AdditiveBlending
     });
 
@@ -1475,8 +1476,8 @@ export class FloraSystem {
         if (positions[i + 2] < -50) positions[i + 2] += 100;
       }
       this.spores.geometry.attributes.position.needsUpdate = true;
-      this.spores.material.opacity = 0.5 + this.floraAudioMid * 0.5;
-      this.spores.material.size = 0.3 + this.floraAudioBass * 0.3;
+      this.spores.material.opacity = 0.3 + this.floraAudioMid * 0.3;
+      this.spores.material.size = 0.12 + this.floraAudioBass * 0.15;
     }
 
     // Update biome flora
@@ -1928,6 +1929,85 @@ export class FloraSystem {
       ember.rotation.y = Math.random() * Math.PI * 2;
       this.addFlora(ember, biomeId);
     }
+  }
+
+  /**
+   * Get positions of visible flora in the path ahead
+   * Used for collision avoidance path planning
+   * @param {number} minZ - Minimum Z (behind rover, positive = behind)
+   * @param {number} maxZ - Maximum Z (ahead of rover, negative = ahead)
+   * @param {number} xRange - X range to check (+/- this value from center)
+   * @param {number} trunkRadius - Base trunk radius to consider
+   * @returns {Array} Array of {x, z, radius} objects for nearby flora
+   */
+  getFloraInPath(minZ = 5, maxZ = -50, xRange = 15, trunkRadius = 0.5) {
+    const nearby = [];
+
+    for (const flora of this.flora) {
+      if (!flora.visible) continue;
+
+      const fz = flora.position.z;
+      const fx = flora.position.x;
+
+      // Check if in the search rectangle
+      if (fz < minZ && fz > maxZ && Math.abs(fx) < xRange) {
+        // Estimate trunk radius based on scale
+        const scale = flora.scale?.x ?? 1;
+        const estimatedRadius = trunkRadius * scale;
+
+        nearby.push({
+          x: fx,
+          z: fz,
+          radius: estimatedRadius
+        });
+      }
+    }
+
+    return nearby;
+  }
+
+  /**
+   * Get positions of visible flora near a given point (legacy method)
+   * @deprecated Use getFloraInPath for path planning
+   */
+  getNearbyFloraPositions(x, z, radius = 10, trunkRadius = 0.5) {
+    const nearby = [];
+
+    for (const flora of this.flora) {
+      if (!flora.visible) continue;
+
+      const dx = flora.position.x - x;
+      const dz = flora.position.z - z;
+      const dist = Math.sqrt(dx * dx + dz * dz);
+
+      if (dist < radius) {
+        const scale = flora.scale?.x ?? 1;
+        const estimatedRadius = trunkRadius * scale;
+
+        nearby.push({
+          x: flora.position.x,
+          z: flora.position.z,
+          radius: estimatedRadius,
+          distance: dist
+        });
+      }
+    }
+
+    return nearby;
+  }
+
+  /**
+   * Set wisp light data for procedural flora materials
+   */
+  setWispLights(texture, color, radius) {
+    this.proceduralFlora.setWispLights(texture, color, radius);
+  }
+
+  /**
+   * Set firefly light data for procedural flora materials
+   */
+  setFireflyLights(texture, color, radius) {
+    this.proceduralFlora.setFireflyLights(texture, color, radius);
   }
 
   dispose() {
