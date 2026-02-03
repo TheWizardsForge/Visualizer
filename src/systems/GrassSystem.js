@@ -709,49 +709,69 @@ export class GrassSystem {
     // Update shadows and clutter positions (wrap around)
     const wrapRange = 200;
     const halfRange = wrapRange / 2;
+    const terrainBaseY = this.terrainSystem.terrain?.position.y || 0;
 
     for (const shadow of this.shadows) {
       const relZ = shadow.userData.worldZ - roverZ;
-      shadow.position.z = ((relZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
-      shadow.position.y = this.terrainSystem.getHeight(shadow.userData.worldX, shadow.userData.worldZ - roverZ + shadow.position.z) +
-                          this.terrainSystem.terrain.position.y + 0.05;
+      const wrappedZ = ((relZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
+      shadow.position.z = wrappedZ;
+
+      // Only recalculate height on wrap
+      const lastZ = shadow.userData.lastWrappedZ ?? wrappedZ;
+      if (Math.abs(wrappedZ - lastZ) > wrapRange * 0.5 || shadow.userData.cachedHeight === undefined) {
+        shadow.userData.cachedHeight = this.terrainSystem.getHeight(shadow.userData.worldX, wrappedZ + roverZ);
+      }
+      shadow.userData.lastWrappedZ = wrappedZ;
+      shadow.position.y = shadow.userData.cachedHeight + terrainBaseY + 0.05;
+
       // Update sun brightness for dappled shadows
       if (shadow.material.uniforms?.uSunBrightness) {
         shadow.material.uniforms.uSunBrightness.value = sunBrightness;
       }
     }
 
-    // Night tint color (blue-ish)
-    const nightTint = new THREE.Color(0.7, 0.75, 0.9);
+    // Pre-calculate night tint multipliers (avoid creating Color object every frame)
+    const nightTintR = 0.7 + 0.3 * sunBrightness;
+    const nightTintG = 0.75 + 0.25 * sunBrightness;
+    const nightTintB = 0.9 + 0.1 * sunBrightness;
     const ambientLevel = 0.15 + sunBrightness * 0.85;
 
     for (const item of this.clutter) {
       const relZ = item.userData.worldZ - roverZ;
-      item.position.z = ((relZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
-      const actualWorldZ = item.position.z + roverZ;
-      item.position.y = this.terrainSystem.getHeight(item.userData.worldX, actualWorldZ) +
-                        this.terrainSystem.terrain.position.y + 0.02;
+      const wrappedZ = ((relZ % wrapRange) + wrapRange * 1.5) % wrapRange - halfRange;
+      item.position.z = wrappedZ;
 
-      // Apply night darkening to clutter
-      if (item.material && item.userData.baseColor) {
-        const base = item.userData.baseColor;
-        const tintedR = base.r * (nightTint.r + (1 - nightTint.r) * sunBrightness) * ambientLevel;
-        const tintedG = base.g * (nightTint.g + (1 - nightTint.g) * sunBrightness) * ambientLevel;
-        const tintedB = base.b * (nightTint.b + (1 - nightTint.b) * sunBrightness) * ambientLevel;
-        item.material.color.setRGB(tintedR, tintedG, tintedB);
+      // Only recalculate height on wrap
+      const lastZ = item.userData.lastWrappedZ ?? wrappedZ;
+      if (Math.abs(wrappedZ - lastZ) > wrapRange * 0.5 || item.userData.cachedHeight === undefined) {
+        item.userData.cachedHeight = this.terrainSystem.getHeight(item.userData.worldX, wrappedZ + roverZ);
+      }
+      item.userData.lastWrappedZ = wrappedZ;
+      item.position.y = item.userData.cachedHeight + terrainBaseY + 0.02;
+
+      // Apply night darkening to clutter (cache material children on first run)
+      if (!item.userData.materialChildren) {
+        item.userData.materialChildren = [];
+        if (item.material && item.userData.baseColor) {
+          item.userData.materialChildren.push(item);
+        }
+        if (item.children?.length) {
+          item.traverse(child => {
+            if (child !== item && child.material && child.userData.baseColor) {
+              item.userData.materialChildren.push(child);
+            }
+          });
+        }
       }
 
-      // Handle groups (like ferns) with child meshes
-      if (item.children) {
-        item.traverse(child => {
-          if (child.material && child.userData.baseColor) {
-            const base = child.userData.baseColor;
-            const tintedR = base.r * (nightTint.r + (1 - nightTint.r) * sunBrightness) * ambientLevel;
-            const tintedG = base.g * (nightTint.g + (1 - nightTint.g) * sunBrightness) * ambientLevel;
-            const tintedB = base.b * (nightTint.b + (1 - nightTint.b) * sunBrightness) * ambientLevel;
-            child.material.color.setRGB(tintedR, tintedG, tintedB);
-          }
-        });
+      // Update cached material children
+      for (const child of item.userData.materialChildren) {
+        const base = child.userData.baseColor;
+        child.material.color.setRGB(
+          base.r * nightTintR * ambientLevel,
+          base.g * nightTintG * ambientLevel,
+          base.b * nightTintB * ambientLevel
+        );
       }
     }
   }

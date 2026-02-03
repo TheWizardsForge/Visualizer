@@ -45,15 +45,32 @@ class Visualizer {
     this.transitionProgress = 0;
     this.transitionDuration = 0.5; // seconds
 
-    // Performance options
-    this.showFPS = false;
-    this.frameRateCap = 0; // 0 = uncapped (vsync), 30, 60, etc.
+    // Performance options (load from localStorage)
+    this.showFPS = localStorage.getItem('visualizer_showFPS') === 'true';
+    this.frameRateCap = parseInt(localStorage.getItem('visualizer_frameRateCap')) || 0;
+    this.qualityLevel = localStorage.getItem('visualizer_quality') || 'high';
     this.lastFrameTime = 0;
     this.frameCount = 0;
     this.fps = 0;
     this.fpsUpdateTime = 0;
 
     this.init();
+  }
+
+  saveSettings() {
+    localStorage.setItem('visualizer_showFPS', this.showFPS);
+    localStorage.setItem('visualizer_frameRateCap', this.frameRateCap);
+    localStorage.setItem('visualizer_quality', this.qualityLevel);
+  }
+
+  getQualitySettings() {
+    // Returns settings based on quality level
+    const settings = {
+      low: { terrainSegments: 50, grassCount: 15000, clutterDensity: 30 },
+      medium: { terrainSegments: 100, grassCount: 30000, clutterDensity: 60 },
+      high: { terrainSegments: 150, grassCount: 50000, clutterDensity: 100 }
+    };
+    return settings[this.qualityLevel] || settings.high;
   }
 
   init() {
@@ -69,8 +86,9 @@ class Visualizer {
     // Audio analyzer
     this.audio = new AudioAnalyzer();
 
-    // Initialize all modes
-    this.modes = MODE_LIST.map(m => new m.Class(this.renderer));
+    // Initialize all modes with quality settings
+    const qualitySettings = this.getQualitySettings();
+    this.modes = MODE_LIST.map(m => new m.Class(this.renderer, qualitySettings));
 
     // Create fade overlay for smooth transitions
     this.fadeOverlay = document.createElement('div');
@@ -103,7 +121,7 @@ class Visualizer {
       z-index: 1001;
     `;
     this.fpsDisplay.textContent = 'FPS: --';
-    this.fpsDisplay.style.display = 'none'; // Hidden by default
+    this.fpsDisplay.style.display = this.showFPS ? '' : 'none';
     document.body.appendChild(this.fpsDisplay);
 
     // Build mode dropdown options
@@ -155,9 +173,20 @@ class Visualizer {
     const perfFolder = mainFolder.addFolder('Performance');
     perfFolder.add(this, 'showFPS').name('Show FPS').onChange((v) => {
       this.fpsDisplay.style.display = v ? '' : 'none';
+      this.saveSettings();
     });
     const fpsCapOptions = { 'VSync (Monitor)': 0, '30 FPS': 30, '60 FPS': 60, '120 FPS': 120 };
-    perfFolder.add(this, 'frameRateCap', fpsCapOptions).name('Frame Rate Cap');
+    perfFolder.add(this, 'frameRateCap', fpsCapOptions).name('Frame Rate Cap').onChange(() => {
+      this.saveSettings();
+    });
+    const qualityOptions = { 'Low': 'low', 'Medium': 'medium', 'High': 'high' };
+    perfFolder.add(this, 'qualityLevel', qualityOptions).name('Quality (reload)').onChange(() => {
+      this.saveSettings();
+      // Quality changes require reload
+      if (confirm('Quality change requires reload. Reload now?')) {
+        location.reload();
+      }
+    });
 
     // Add mode-specific controls
     this.modeFolder = this.gui.addFolder('Mode Settings');

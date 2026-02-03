@@ -14,8 +14,15 @@ import { SimplexNoise } from '../systems/SimplexNoise.js';
  * This is the main mode that will support multiple realms/planes of existence
  */
 export class PlanarMode extends BaseMode {
-  constructor(renderer) {
+  constructor(renderer, qualitySettings = {}) {
     super(renderer);
+
+    // Store quality settings
+    this.qualitySettings = {
+      terrainSegments: qualitySettings.terrainSegments ?? 150,
+      grassCount: qualitySettings.grassCount ?? 50000,
+      clutterDensity: qualitySettings.clutterDensity ?? 100
+    };
 
     // Initialize parameters
     this.params = {
@@ -82,11 +89,12 @@ export class PlanarMode extends BaseMode {
     // Get realm configuration
     const realmConfig = this.getRealmConfig(this.currentRealm);
 
-    // Initialize Terrain System
+    // Initialize Terrain System (use quality settings for segments)
     this.terrainSystem = new TerrainSystem(this.scene, {
       seed: this.currentSeed,
       terrainScale: realmConfig.terrainScale || this.params.terrainScale,
       terrainHeight: realmConfig.terrainHeight || this.params.terrainHeight,
+      terrainSegments: this.qualitySettings.terrainSegments,
       biomes: realmConfig.biomes,
       biomeCount: realmConfig.biomeCount || 15,
       biomeCycleSpeed: realmConfig.biomeCycleSpeed || 0.0001,
@@ -110,13 +118,13 @@ export class PlanarMode extends BaseMode {
     });
     this.faunaSystem.create();
 
-    // Initialize Grass System for terrestrial realms
+    // Initialize Grass System for terrestrial realms (use quality settings)
     this.grassSystem = new GrassSystem(this.scene, this.terrainSystem, {
       enabled: realmConfig.grassEnabled ?? false,
-      instanceCount: realmConfig.grassDensity ?? 50000,
+      instanceCount: Math.min(realmConfig.grassDensity ?? 50000, this.qualitySettings.grassCount),
       grassColor: realmConfig.grassColor ? new THREE.Color(realmConfig.grassColor) : new THREE.Color(0.1, 0.4, 0.05),
       clutterEnabled: realmConfig.clutterEnabled ?? false,
-      clutterDensity: realmConfig.clutterDensity ?? 100
+      clutterDensity: Math.min(realmConfig.clutterDensity ?? 100, this.qualitySettings.clutterDensity)
     });
     this.grassSystem.create();
 
@@ -524,11 +532,15 @@ export class PlanarMode extends BaseMode {
     // Calculate ambient light based on sun (for night darkening)
     const sunBrightness = this.atmosphereSystem.sunBrightness;
     const ambientLevel = 0.15 + sunBrightness * 0.85; // 0.15 at night, 1.0 at noon
-    const nightTint = new THREE.Color().setRGB(
+
+    // Reuse cached color object to avoid allocations
+    if (!this._nightTint) this._nightTint = new THREE.Color();
+    this._nightTint.setRGB(
       ambientLevel * (0.7 + sunBrightness * 0.3), // Slightly blue at night
       ambientLevel * (0.7 + sunBrightness * 0.3),
       ambientLevel * (0.8 + sunBrightness * 0.2)
     );
+    const nightTint = this._nightTint;
 
     // Update terrain with day/night tint
     this.terrainSystem.update(delta, elapsed, audioData, this.roverPosition.z);
